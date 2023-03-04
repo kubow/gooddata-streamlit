@@ -1,16 +1,16 @@
 # Class for GoodData interaction
-# For test run as separate file
+# For test run as a separate file
 
 from gooddata_pandas import GoodPandas
 from gooddata_sdk import GoodDataSdk
 
 
 class GdDt:
-    def __init__(self, host: str = '', token: str = '') -> None:
+    def __init__(self) -> None:
         self._sdk = None
         self._gp = None
-        self._wks = {
-            'list': None,
+        self.wks = {
+            'list': [],
             'catalog': None,
             'insight': None,
             'attrs': {},
@@ -24,33 +24,72 @@ class GdDt:
             'dts': str,   # dataset
         }
 
-    def activate(self, host: str, token: str) -> object:
+    def activate(self, host: str, token: str) -> None:
         self._sdk = GoodDataSdk.create(host, token)
         self._gp = GoodPandas(host, token)
-        self._wks['list'] = self.get_content()
-        return self
+        self.wks['list'] = self.get_object()
+        # return self  # TODO: need to be here really?
 
-    def get_ws(self, ws_name: str = '', ws_id: str = '') -> str:
-        # get **workspace id/name** by submit name/id
-        for w in self._wks['list']:
-            if w.name == ws_name or w.id == ws_id:
-                return w.id if ws_name else w.name
+    def identify(self, title: str = '', id: str = '', entity: str = 'workspace') -> str:
+        # get **type id/name** submitting name/id
+        if entity == 'workspace':
+            for w in self.wks['list']:
+                if w.name == title or w.id == id:
+                    return w.id if title else w.name
+        elif entity == 'insight':
+            for i in self.wks['insight']:
+                if i.title == title or i.id == id:
+                    return i.id if title else i.title
+        elif entity in ['metric', 'attribute', 'fact']:
+            return ''  # TODO: not for now
+        else:
+            return ''  # empty string for not recognized types
 
-    def get_content(self, type: str = '') -> any:
+    def list(self, entity: str = 'workspace') -> list:
+        if not self._sdk:
+            return []
+        if entity == 'workspace':
+            return [w.name for w in self.get_object()]
+        elif entity == 'insight':
+            return [i.title for i in self.wks['insight']]
+        elif entity == 'metric':
+            return [m.obj_id for m in self.wks['metrics']]
+        elif entity == 'fact':
+            return [f for f in self.wks['facts']]
+        elif entity == 'attr':
+            return [a for a in self.wks['attrs']]
+        else:
+            return []
+
+    def select(self, id: str = '', type: str = 'id', entity: str = 'workspace') -> None:
+        # select **workspace/dataset/metric**
+        if type != 'id':
+            id = self.identify(title=id, entity=entity)
+        if entity == 'workspace':
+            self.active['wks'] = id
+            self.wks['catalog'] = self.get_object('catalog')
+            self.wks['insight'] = self.get_object('insights')
+            self.wks['attrs'] = self.get_object('attrs')
+            self.wks['facts'] = self.get_object('facts')
+            self.wks['metrics'] = self.get_object('metric')
+        elif entity == 'insight':
+            self.active['ins'] = id
+
+    def get_object(self, type: str = '') -> any:
         if type == 'catalog':
             return self._sdk.catalog_workspace_content.get_full_catalog(self.active['wks'])
         elif type == 'attrs':
-            for a in self._wks['catalog'].datasets:
+            for a in self.wks['catalog'].datasets:
                 for i in range(len(a.attributes)-1):
-                    self._wks['attrs'][str(
+                    self.wks['attrs'][str(
                         a.attributes[i].obj_id)] = a.attributes[i]
-            return self._wks['attrs']
+            return self.wks['attrs']
         elif type == 'facts':
-            for a in self._wks['catalog'].datasets:
+            for a in self.wks['catalog'].datasets:
                 for i in range(len(a.facts)-1):
-                    self._wks['facts'][str(a.facts[i].obj_id)] = a.facts[i]
-            return self._wks['facts']
-        elif type == 'insight':
+                    self.wks['facts'][str(a.facts[i].obj_id)] = a.facts[i]
+            return self.wks['facts']
+        elif type == 'insights':
             return self._sdk.insights.get_insights(self.active['wks'])
         elif type == 'metric':
             return self._sdk.catalog_workspace_content.get_metrics_catalog(self.active['wks'])
@@ -66,20 +105,10 @@ class GdDt:
         else:
             return self._sdk.catalog_workspace.list_workspaces()
 
-    def set_ws(self, ws: str = '', type: str = 'id') -> None:
-        # select **workspace/dataset/metric**
-        if type != 'id':
-            ws = self.get_ws(ws_name=ws)
-        if ws:
-            self.active['wks'] = ws
-            self._wks['catalog'] = self.get_content('catalog')
-            self._wks['insight'] = self.get_content('insight')
-            self._wks['metrics'] = self.get_content('metric')
-            self._wks['attrs'] = self.get_content('attrs')
-
 
 if __name__ == "__main__":
     gd = GdDt()
-    gd.activate('https://jav.demo.cloud.gooddata.com',
-                'SmFrdWIuVmFqZGE6anVweXRlcjpuK0ttaFh5OXkreTN2SGxBOEhqSVlmVXIrcmx1UnBKMw==')
+    endpoint = input("Input your endpoint address (http://locahost:3000):")
+    token = input("Input your personal access token:")
+    gd.activate(endpoint, token)
     print(dir(gd))

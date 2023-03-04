@@ -11,7 +11,9 @@ A demo application to showcase UI for interacting with [GoodData Cloud / CN inst
 
 ## To-Do
 
-After selection you will see a hardcoded metrics table / graph
-
+- BUG: Confirming values fills the next selector for second try (must be first one)
+- TODO: Multiselects choose only one value initially
+- TODO: Final buttons ("Build an insight"/"Build up data") are not working for now.
 - Finish selector as per [Using callbacks and session state in Streamlit forms · GitHub](https://gist.github.com/asehmi/f3c76dae68a877138cf9b7307ddebdf7)
-- Add ability to select from actual facts and attributes
+
+- TODO: Add dependabot to the repository
