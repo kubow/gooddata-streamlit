@@ -58,6 +58,8 @@ class GdDt:
             return [f for f in self.wks['facts']]
         elif entity == 'attr':
             return [a for a in self.wks['attrs']]
+        elif entity == 'series':
+            return list(self.get_object('visual').side_loads._objects.keys())
         else:
             return []
 
@@ -74,6 +76,9 @@ class GdDt:
             self.wks['metrics'] = self.get_object('metric')
         elif entity == 'insight':
             self.active['ins'] = id
+        elif entity == 'series':
+            self.active['dts'] = self.get_object(
+                'frames')  # alternatively use series
 
     def get_object(self, type: str = '') -> any:
         if type == 'catalog':
@@ -96,6 +101,8 @@ class GdDt:
             # return self._sdk.catalog_workspace_content.get_full_catalog(self.active['wks']).metrics
         elif type == 'full':
             return self._sdk.catalog_workspace_content.get_full_catalog(self.active['wks'])
+        elif type == 'df':
+            return self._gp.data_frames(self.active['wks']).for_insight(self.active['ins'])
         elif type == 'frames':
             return self._gp.data_frames(self.active['wks'])
         elif type == 'series':

@@ -7,9 +7,10 @@ def main():
     # 1 - initial selections and class variable
     if not "sels" in st.session_state:
         st.session_state["sels"] = {
-            "meas": [],
-            "dims": [],
-            "visu": []
+            "meas":  [],
+            "dims":  [],
+            "visu":  [],
+            "build": []
         }
     if not "gd" in st.session_state:
         st.session_state["gd"] = GdDt()
@@ -89,8 +90,24 @@ def main():
             # TODO: tools to export
             st.write("Here we migh be able to export yaml definition")
     elif replicate:  # CASE visualize insight
-        st.session_state["gd"].select(id=replicate, type="title")
-        print(st.session_state["gd"].get_object("visual"))
+        st.session_state["gd"].select(
+            id=ists[0], type="title", entity="insight")
+        st.session_state["sels"]["build"] = st.session_state["gd"].list(
+            "series")
+        st.write(
+            f'insight {ists[0]} recreate attributes: {st.session_state["sels"]["build"]}')
+        data_frame = st.session_state["gd"].get_object(
+            "df")  # pandas compatible
+        tab_bch, tab_lch, tab_ach, tab_data = st.tabs(
+            ["Bar Chart", "Line Chart", "Area Chart", "Table"])
+        with tab_bch:
+            st.bar_chart(data_frame)
+        with tab_lch:
+            st.line_chart(data_frame)
+        with tab_ach:
+            st.area_chart(data_frame)
+        with tab_data:
+            st.dataframe(data_frame)
     elif confirm:  # CASE GD.C(N) connected
         del st.session_state["sels"]["meas"][:]
         del st.session_state["sels"]["dims"][:]
