@@ -1,9 +1,16 @@
+import json
+import pandas as pd
 import streamlit as st
-
 from gd_metadata import GdDt
+import charts.radar as radar
 
+class Object:
+    def toJSON(self):
+        return json.dumps(self, default=lambda o: o.__dict__, 
+            sort_keys=True, indent=4)
 
 def main():
+
     # 1 - initial selections and class variable
     if not "sels" in st.session_state:
         st.session_state["sels"] = {
@@ -88,26 +95,78 @@ def main():
         with tab_data:
             st.dataframe(indexed_df)
             # TODO: tools to export
-            st.write("Here we migh be able to export yaml definition")
+            st.write("Here we might be able to export yaml definition")
     elif replicate:  # CASE visualize insight
+        st.session_state["gd"].select(id=ists[0], type="title", entity="insight")
         st.session_state["gd"].select(
             id=ists[0], type="title", entity="insight")
         st.session_state["sels"]["build"] = st.session_state["gd"].list(
             "series")
         st.write(
             f'insight {ists[0]} recreate attributes: {st.session_state["sels"]["build"]}')
-        data_frame = st.session_state["gd"].get_object(
-            "df")  # pandas compatible
-        tab_bch, tab_lch, tab_ach, tab_data = st.tabs(
-            ["Bar Chart", "Line Chart", "Area Chart", "Table"])
-        with tab_bch:
-            st.bar_chart(data_frame)
-        with tab_lch:
-            st.line_chart(data_frame)
-        with tab_ach:
-            st.area_chart(data_frame)
-        with tab_data:
-            st.dataframe(data_frame)
+        print("gooddata: ", st.session_state.gd),
+        print("gd dumps: ", str(st.session_state.gd)),
+        data_frame_from_insight: pd.DataFrame = st.session_state.gd.get_object("df")  # pandas compatible
+    
+        # tab_bch, tab_lch, tab_ach, tab_data = st.tabs(
+        #     ["Bar Chart", "Line Chart", "Area Chart", "Table"])
+        # with tab_bch:
+        #     st.bar_chart(data_frame)
+        # with tab_lch:
+        #     st.line_chart(data_frame)
+        # with tab_ach:
+
+        print("indefex df", data_frame_from_insight),
+
+        insightDict = {}
+        insightDict["group"] = []
+
+        axesValues = data_frame_from_insight[0].axes[0].values
+        dataValues = data_frame_from_insight[0].values
+        first = axesValues[0][0]
+
+        for idx, x in enumerate(axesValues):
+            print("valTuple: ", x)
+            firstColumn = x[0]
+            secondColumn = x[1]
+
+            print("iterable: ", x)
+            print("insight: ", insightDict["group"])
+            print("first", first)
+            print(firstColumn == first)
+            print("firstColumn: ", firstColumn)
+            print("secondColumn: ", secondColumn)
+            
+            if firstColumn == first:
+                insightDict["group"].append(secondColumn),
+            
+            if not firstColumn in insightDict:
+                insightDict[firstColumn] = []
+
+            print("test: ", insightDict[firstColumn])
+            print("dataVal: ", dataValues[idx])
+
+            insightDict[firstColumn].append(dataValues[idx][0])
+
+        # {
+        #     'group': ['Audio & Video Accessories', 'Clothing', 'Computers & Accessories', 'Furniture', 'Home Goods'],
+        #     '1-3M': [344, 75, 316, 93, 154],
+        #     '4-6M': [221, 37, 3, 188, 54],
+        #     '7M+': [307, 348, 83, 319, 134],
+        # }
+
+        data = pd.DataFrame(insightDict)
+        print("data: ", insightDict)
+
+        radar.radar_chart(data)
+
+        print("axes values: ", data_frame_from_insight[0].axes[0].values)
+        print("data values: ", )
+
+        st.area_chart(data_frame_from_insight)
+        # with tab_data:
+        st.dataframe(data_frame_from_insight)
+
     elif confirm:  # CASE GD.C(N) connected
         del st.session_state["sels"]["meas"][:]
         del st.session_state["sels"]["dims"][:]
@@ -129,7 +188,8 @@ def main():
             f"Insights (Visualizations): {st.session_state['sels']['visu']}")
     elif connect:  # CASE connect to GD.C(N)
         try:
-            st.session_state["gd"].activate(host, token)
+            st.session_state["gd"].activate("https://rauan.internal.cloud.gooddata.com/", "cmF1YW4uc21hZ3Vsb3Y6c3RyZWFtbGl0MjpMNVpKWWFZODlud2tPbzFkOUpLaENqUjRLQ0k1OGE5SQ==")
+            # st.session_state["gd"].activate("http://localhost:3000/", "ZGVtbzpzdHJlYW1saXQ6R2hOeXBKTWh4TTdoZWU4MlVtQkhWK0NmdnpIQ0Zsb0g=")
             print("Activated connection to gooddata succesfully")
         except Exception as e:
             print(f"Something happened...{e}")

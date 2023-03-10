@@ -1,0 +1,15 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+streamlit = "==1.0.0"
+gooddata-pandas = "==1.2.0"
+gooddata-sdk = "==1.2.0"
+matplotlib = "==3.3.4"
+
+[dev-packages]
+
+[requires]
+python_version = "3.11"

@@ -4,7 +4,6 @@
 from gooddata_pandas import GoodPandas
 from gooddata_sdk import GoodDataSdk
 
-
 class GdDt:
     def __init__(self) -> None:
         self._sdk = None
@@ -25,11 +24,12 @@ class GdDt:
         }
 
     def activate(self, host: str, token: str) -> None:
+        print("fired"),
         self._sdk = GoodDataSdk.create(host, token)
         self._gp = GoodPandas(host, token)
         self.wks['list'] = self.get_object()
         # return self  # TODO: need to be here really?
-
+ 
     def identify(self, title: str = '', id: str = '', entity: str = 'workspace') -> str:
         # get **type id/name** submitting name/id
         if entity == 'workspace':
@@ -102,7 +102,7 @@ class GdDt:
         elif type == 'full':
             return self._sdk.catalog_workspace_content.get_full_catalog(self.active['wks'])
         elif type == 'df':
-            return self._gp.data_frames(self.active['wks']).for_insight(self.active['ins'])
+            return self._gp.data_frames(self.active['wks']).for_insight(self.active['ins']),
         elif type == 'frames':
             return self._gp.data_frames(self.active['wks'])
         elif type == 'series':
@@ -112,10 +112,9 @@ class GdDt:
         else:
             return self._sdk.catalog_workspace.list_workspaces()
 
-
 if __name__ == "__main__":
     gd = GdDt()
-    endpoint = input("Input your endpoint address (http://locahost:3000):")
-    token = input("Input your personal access token:")
-    gd.activate(endpoint, token)
+    # endpoint = input("Input your endpoint address (http://locahost:3000):")
+    # token = input("Input your personal access token:")
+    gd.activate("https://rauan.internal.cloud.gooddata.com/", "cmF1YW4uc21hZ3Vsb3Y6c3RyZWFtbGl0MjpMNVpKWWFZODlud2tPbzFkOUpLaENqUjRLQ0k1OGE5SQ==")
     print(dir(gd))
