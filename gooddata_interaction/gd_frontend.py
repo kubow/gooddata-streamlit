@@ -1,16 +1,22 @@
+import charts.radar as radar
+from gd_metadata import GdDt
 import json
 import pandas as pd
 import streamlit as st
-from gd_metadata import GdDt
-import charts.radar as radar
+from rcfile import rcfile
+
 
 class Object:
     def toJSON(self):
-        return json.dumps(self, default=lambda o: o.__dict__, 
-            sort_keys=True, indent=4)
+        return json.dumps(self, default=lambda o: o.__dict__,
+                          sort_keys=True, indent=4)
+
 
 def main():
-
+    # 0 - set up connection from rcfile
+    config = rcfile("gooddata")
+    assert config["host"]
+    assert config["token"]
     # 1 - initial selections and class variable
     if not "sels" in st.session_state:
         st.session_state["sels"] = {
@@ -38,11 +44,11 @@ def main():
     }
 
     with sidebar_cont["endpt"]:  # Initial connection setup
-        st.subheader("Input your Gooddata connection")
-        with st.form(key="gd_conn"):
-            host = st.text_input("enpoint url")
-            token = st.text_input("private api cloud token")
-            connect = st.form_submit_button("Connect")
+        with st.expander("Gooddata Cloud (Native) connection"):
+            with st.form(key="gd_conn"):
+                host = st.text_input("enpoint url")
+                token = st.text_input("private api cloud token")
+                connect = st.form_submit_button("Connect")
     with sidebar_cont["wrksp"]:  # Workspaces selector
         with st.form(key="gd_wrks"):
             workspace = st.selectbox(
@@ -97,7 +103,8 @@ def main():
             # TODO: tools to export
             st.write("Here we might be able to export yaml definition")
     elif replicate:  # CASE visualize insight
-        st.session_state["gd"].select(id=ists[0], type="title", entity="insight")
+        st.session_state["gd"].select(
+            id=ists[0], type="title", entity="insight")
         st.session_state["gd"].select(
             id=ists[0], type="title", entity="insight")
         st.session_state["sels"]["build"] = st.session_state["gd"].list(
@@ -106,8 +113,9 @@ def main():
             f'insight {ists[0]} recreate attributes: {st.session_state["sels"]["build"]}')
         print("gooddata: ", st.session_state.gd),
         print("gd dumps: ", str(st.session_state.gd)),
-        data_frame_from_insight: pd.DataFrame = st.session_state.gd.get_object("df")  # pandas compatible
-    
+        data_frame_from_insight: pd.DataFrame = st.session_state.gd.get_object(
+            "df")  # pandas compatible
+
         # tab_bch, tab_lch, tab_ach, tab_data = st.tabs(
         #     ["Bar Chart", "Line Chart", "Area Chart", "Table"])
         # with tab_bch:
@@ -136,10 +144,10 @@ def main():
             print(firstColumn == first)
             print("firstColumn: ", firstColumn)
             print("secondColumn: ", secondColumn)
-            
+
             if firstColumn == first:
                 insightDict["group"].append(secondColumn),
-            
+
             if not firstColumn in insightDict:
                 insightDict[firstColumn] = []
 
@@ -188,8 +196,9 @@ def main():
             f"Insights (Visualizations): {st.session_state['sels']['visu']}")
     elif connect:  # CASE connect to GD.C(N)
         try:
-            st.session_state["gd"].activate("https://rauan.internal.cloud.gooddata.com/", "cmF1YW4uc21hZ3Vsb3Y6c3RyZWFtbGl0MjpMNVpKWWFZODlud2tPbzFkOUpLaENqUjRLQ0k1OGE5SQ==")
-            # st.session_state["gd"].activate("http://localhost:3000/", "ZGVtbzpzdHJlYW1saXQ6R2hOeXBKTWh4TTdoZWU4MlVtQkhWK0NmdnpIQ0Zsb0g=")
+            st.session_state["gd"].activate("https://rauan.internal.cloud.gooddata.com/",
+                                            "cmF1YW4uc21hZ3Vsb3Y6c3RyZWFtbGl0MjpMNVpKWWFZODlud2tPbzFkOUpLaENqUjRLQ0k1OGE5SQ==")
+            # st.session_state["gd"].activate(config["host"], config["token"])
             print("Activated connection to gooddata succesfully")
         except Exception as e:
             print(f"Something happened...{e}")
