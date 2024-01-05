@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<body>
+    <pre id="embedded-description"></pre>
+    <input id="myinput" value="" />
+    <iframe 
+        title="Analytics Designer"
+        id="embedded-content"
+        src="https://demos.cloud.gooddata.com/analyze/embedded/#/ecommerce-parent-dev/09a05f3f-d0cd-423a-8844-eba4ba7ca0c4/edit"
+        height="700px" 
+        width="100%" 
+    ></iframe>
+    <script>
+        console.log("#PARENT: Setup parent message listener");
+        
+        function sendMessageToStreamlitClient(type, data) {
+        var outData = Object.assign({
+          isStreamlitMessage: true,
+          type: type,
+        }, data);
+        window.parent.postMessage(outData, "*");
+        }
+
+        function init() {
+            sendMessageToStreamlitClient("streamlit:componentReady", {apiVersion: 1});
+        }
+
+        function setFrameHeight(height) {
+            sendMessageToStreamlitClient("streamlit:setFrameHeight", {height: height});
+        }
+
+        // The `data` argument can be any JSON-serializable value.
+        function sendDataToPython(data) {
+            sendMessageToStreamlitClient("streamlit:setComponentValue", data);
+        }
+
+        // ----------------------------------------------------
+        // Now modify this part of the code to fit your needs:
+
+        var myInput = document.getElementById("myinput");
+
+        // data is any JSON-serializable value you sent from Python,
+        // and it's already deserialized for you.
+        function onDataFromPython(event) {
+            if (event.data.type !== "streamlit:render") return;
+            myInput.value = event.data.args.my_input_value;  // Access values sent from Python here!
+        }
+
+        myInput.addEventListener("change", function() {
+            sendDataToPython({
+            value: myInput.value,
+            dataType: "json",
+            });
+        })
+
+        // Hook things up!
+        window.addEventListener("message", onDataFromPython);
+        init();
+
+        // Hack to autoset the iframe height.
+        window.addEventListener("load", function() {
+            window.setTimeout(function() {
+            setFrameHeight(document.documentElement.clientHeight)
+            }, 0);
+        });
+
+        // Optionally, if the automatic height computation fails you, give this component a height manually
+        // by commenting out below:
+        //setFrameHeight(200);
+
+        //?apiTokenAuthentication=true                 needs to be added
+
+        /* window.addEventListener(
+            "message",
+            function (e) {
+                console.log("#PARENT: Post message received", e.data.gdc.event)
+                if (e.data.gdc.event.name == "listeningForApiToken"){
+                    const postMessageStructure = {
+                        gdc: {
+                            product: "dashboard",
+                            event: {
+                                name: "setApiToken",
+                                data: {
+                                    token: ""
+                                }
+                            }
+                        }
+                    };
+                    console.log("#PARENT: Sending token to embedded window", postMessageStructure);
+                    
+                    const origin = "*";
+                    const iframe = document.getElementById("embedded-content").contentWindow;
+                    iframe.postMessage(postMessageStructure, origin);
+                }
+            },
+            false
+        ); */
+
+        window.onload = function() {
+            const iframe = document.getElementById("embedded-content");
+            const pre = document.getElementById("embedded-description");
+            pre.innerHTML = iframe.src;
+        };
+    </script>
+</body>
+</html>

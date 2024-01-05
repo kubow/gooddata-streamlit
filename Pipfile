@@ -5,8 +5,8 @@ name = "pypi"
 
 [packages]
 streamlit = "==1.0.0"
-gooddata-pandas = "==1.2.0"
-gooddata-sdk = "==1.2.0"
+gooddata-pandas = "==1.11.0"
+gooddata-sdk = "==1.11.0"
 matplotlib = "==3.3.4"
 
 [dev-packages]
