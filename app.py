@@ -1,21 +1,21 @@
 
 from component import mycomponent
-import openai
+from openai import OpenAI
 import streamlit as st
 
 
 def main():
     #connect openai key
-    openai.api_key = st.secrets["OPENAI_API_KEY"]
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     if "openai_model" not in st.session_state:
-        st.session_state["openai_model"] = "gpt-3.5-turbo"
+        st.session_state["openai_model"] = "gpt-3.5-turbo-1106"
     if "messages" not in st.session_state:
         st.session_state.messages = []
     
     st.set_page_config(
         layout="wide", page_icon="favicon.ico", page_title="Streamlit-GoodData integration demo"
     )
-    st.sidebar.success("Select a demo above.")
+    st.sidebar.success("The chatbot will be here.")
     value = mycomponent(my_input_value="hello there")
     st.write("Received", value)
 
@@ -33,15 +33,13 @@ def main():
             message_placeholder = st.empty()
             full_response = ""
             # Simulate stream of response with milliseconds delay
-            for response in openai.ChatCompletion.create(
-                model=st.session_state["openai_model"],
-                messages=[
-                    {"role": m["role"], "content": m["content"]}
-                    for m in st.session_state.messages
-                ],
-                #will provide lively writing
-                stream=True,
-            ):
+            for response in client.chat.completions.create(model=st.session_state["openai_model"],
+            messages=[
+                {"role": m["role"], "content": m["content"]}
+                for m in st.session_state.messages
+            ],
+            #will provide lively writing
+            stream=True):
                 #get content in response
                 full_response += response.choices[0].delta.get("content", "")
                 # Add a blinking cursor to simulate typing
