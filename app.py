@@ -1,5 +1,5 @@
 
-from common import LoadGoodDataSdk, visualize_workspace_hierarchy
+from common import LoadGoodDataSdk
 from component import mycomponent
 # from pandasgui import show
 # import enchant
@@ -80,16 +80,17 @@ def main():
     with st.sidebar:
         ws_list = st.selectbox("Select a workspace", options=[w.name for w in st.session_state["gd"].workspaces])
         st.session_state["analytics"] = st.session_state["gd"].details(wks_id=ws_list, by="name")
-        with st.expander("Embedding"):
+        with st.expander("Dashboards"):
             ws_dash_list = st.selectbox("Select a dashboard", [d.title for d in st.session_state["analytics"].analytical_dashboards])
             embed_dashboard = st.button("Embed dashboard")
             display_dashboard = st.button("Display details")
+            advanced_describe = st.button("Dashboard describe")
         with st.expander("Data frames"):
             df_insight = st.selectbox("Select an Insight", [d.title for d in st.session_state["analytics"].visualization_objects])
-            df_metric = st.selectbox("Select a metric", [m.title for m in st.session_state["analytics"].metrics])
+            df_metric = st.selectbox("Select a Dataset", [m.title for m in st.session_state["analytics"].metrics])
             display_insight = st.button("Display an insight")
             display_metric = st.button("Display a metric")
-        advanced_describe = st.button("Dashboard describe")
+        
         advanced_keydriver = st.button("Key driver analysis")
 
     # decission tree
@@ -97,7 +98,7 @@ def main():
     if embed_dashboard:
         active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
         st.write(f"connecting to: {st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700")
-        components.iframe(f"{st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700", 625, 700)
+        components.iframe(f"{st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700", 1000, 700)
     elif display_dashboard:
         active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
         st.write(f"Selected dashboard: {active_dash}")
@@ -119,6 +120,7 @@ def main():
     else:
         st.text(st.session_state["gd"].tree())
         st.write(f"Selected workspace: {active_ws}")
+        st.write("Conenction info", st.session_state["gd"].organization().attributes)
         
     
 if __name__ == "__main__":

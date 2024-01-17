@@ -1,6 +1,8 @@
+from fpdf import FPDF
 from gooddata_sdk import GoodDataSdk, CatalogWorkspace
 from gooddata_pandas import GoodPandas
-import streamlit as st
+import math
+from tabulate import tabulate
 from treelib import Tree
 
 
@@ -19,16 +21,14 @@ class LoadGoodDataSdk:
             self.groups = self._sdk.catalog_user.list_user_groups()
             self.datasources = self._sdk.catalog_data_source.list_data_sources()
             self.workspaces = self._sdk.catalog_workspace.list_workspaces()
-
-    def organization(self):
-        print(f"\nCurrent organization info:")  # ORGANIZATION INFO
-        pretty(self._sdk.catalog_organization.get_organization().to_dict())
-        return self._sdk.catalog_organization.get_organization()
     
-    def data(self, ws_id="", for_insight=""):
+    def data(self, ws_id="", for_insight="", pdf_export=False, path=""):
         if for_insight:
             temp = self._gp.data_frames(ws_id)
-            return temp.for_insight(insight_id=for_insight)
+            if pdf_export:
+                dataframe_to_pdf(temp.for_insight(insight_id=for_insight), pdf_path=path, pages=2)
+            else:
+                return temp.for_insight(insight_id=for_insight)
         else:
             return self._gp.data_frames(ws_id)
 
@@ -62,16 +62,18 @@ class LoadGoodDataSdk:
         elif of_type == "workspace":
             return [w.id for w in self.workspaces if name == w.name][0]
         else:
-            if not main:
-                return None
-            else:
-                temp = self.details(wks_id=main, by="id")
+            temp = self.details(wks_id=main, by="id")
             if of_type == "insight":
                 return [i.id for i in temp.visualization_objects if name == i.title][0]
             elif of_type == "dashboard":
                 return [w.id for w in temp.analytical_dashboards if name == w.title][0]
             elif of_type == "metric":
                 return [w.id for w in temp.metrics if name == w.title][0]
+
+    def organization(self):
+        print(f"\nCurrent organization info:")  # ORGANIZATION INFO
+        pretty(self._sdk.catalog_organization.get_organization().to_dict())
+        return self._sdk.catalog_organization.get_organization()
 
     def specific(self, value, of_type="user", by="id", ws_id=""):
         if by != "id":
@@ -117,30 +119,27 @@ def pretty(d, indent=1, char="-"):
         else:
             print(f"{char*(indent)} {str(key)} : {str(value)}")
 
-
 def first_item(dataset, attr=""):
     if len(dataset) < 1:
         return None
     else:
         return next(iter(dataset)).__getattribute__(attr)
 
-
-def visualize_workspace_hierarchy(sdk: classmethod) -> None:
-    tree = Tree()
-    tree.create_node("GoodData", "root")
-    for workspace in sdk.catalog_workspace.list_workspaces():
-        parent_id = workspace.parent_id if workspace.parent_id else "root"
-        if tree.get_node(workspace.id):
-            continue  # we already established the node
-        elif tree.get_node(parent_id):
-            tree.create_node(workspace.name, workspace.id, parent=parent_id)
-        else:
-            temp_root = sdk.catalog_workspace.get_workspace(parent_id)
-            temp_parent_id = temp_root.parent_id if temp_root.parent_id else "root"
-            tree.create_node(temp_root.name, temp_root.id, parent=temp_parent_id)
-            tree.create_node(workspace.name, workspace.id, parent=parent_id)
-    # tree.show(line_type="ascii-em")
-    return tree
+def dataframe_to_pdf(dataframe, pdf_path, num_pages):
+    rows_per_page = math.ceil(len(dataframe) / num_pages)
+    pdf = FPDF()
+    for page in range(num_pages):
+        start_idx = page * rows_per_page
+        end_idx = min((page + 1) * rows_per_page, len(dataframe))
+        page_df = dataframe.iloc[start_idx:end_idx]
+        pdf.add_page()
+        # Convert DataFrame to a formatted table
+        table = tabulate(page_df, headers='keys', tablefmt='grid', showindex=False)
+        # Add the table to the PDF
+        pdf.set_font("Arial", size=12)
+        pdf.multi_cell(0, 10, table)
+    # Save the PDF
+    pdf.output(pdf_path)
 
 
 if __name__ == "__main__":
@@ -148,4 +147,4 @@ if __name__ == "__main__":
     gooddata = LoadGoodDataSdk()
     for user in gooddata.users:
         print(f"user {user.id} with relations {user.relationships}")
-    visualize_workspace_hierarchy(gooddata._sdk)
+    gooddata.tree()
