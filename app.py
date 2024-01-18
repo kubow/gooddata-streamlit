@@ -1,7 +1,6 @@
 
-from common import LoadGoodDataSdk
+from common import LoadGoodDataSdk, csv_to_sql
 from component import mycomponent
-# from pandasgui import show
 # import enchant
 from openai import OpenAI
 import streamlit as st
@@ -90,11 +89,17 @@ def main():
             df_metric = st.selectbox("Select a Dataset", [m.title for m in st.session_state["analytics"].metrics])
             display_insight = st.button("Display an insight")
             display_metric = st.button("Display a metric")
-        
-        advanced_keydriver = st.button("Key driver analysis")
+            advanced_keydriver = st.button("Key driver analysis")
+            upload_csv = st.button("Upload a CSV")
+        with st.expander("Administration"):
+            admin_users = st.selectbox("Select a user", [u.id for u in st.session_state["gd"].users])
+            admin_groups = st.selectbox("Select a group", [g.id for g in st.session_state["gd"].groups])
+            admin_udetail = st.button("Display user details")
+            admin_gdetail = st.button("Display group details")
 
     # decission tree
     active_ws = st.session_state["gd"].specific(ws_list, of_type="workspace", by="name")
+    uploaded_file = st.file_uploader("Choose a file")
     if embed_dashboard:
         active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
         st.write(f"connecting to: {st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700")
@@ -102,21 +107,32 @@ def main():
     elif display_dashboard:
         active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
         st.write(f"Selected dashboard: {active_dash}")
+    elif advanced_describe:
+        active_ins = st.session_state["gd"].specific(df_insight, of_type="insight", by="name", ws_id=active_ws.id)
+        st.write("Selected dashboard: " + ws_dash_list)
+        # st.write(st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id))
+        # st.write(generate_nlg_summary(active_ins))
     elif display_metric:
         active_ds = st.session_state["gd"].specific(df_metric, of_type="metric", by="name", ws_id=active_ws.id)
         st.write(f"Selected metric: {active_ds}")
     elif display_insight:
         active_ins = st.session_state["gd"].specific(df_insight, of_type="insight", by="name", ws_id=active_ws.id)
         st.dataframe(active_ins)
-        
         #st.write(ProfileReport(active_ins, title="Pandas Profiling Report"))
-    elif advanced_describe:
-        active_ins = st.session_state["gd"].specific(df_insight, of_type="insight", by="name", ws_id=active_ws.id)
-        st.write("Selected dashboard: " + ws_dash_list)
-        # st.write(st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id))
-        # st.write(generate_nlg_summary(active_ins))
     elif advanced_keydriver:
         st.write("Advanced keydriver")
+    elif upload_csv and uploaded_file is not None:
+        st.write("Create a new SQL dataset and paste the SQL query (final version should post it directly to the model)")
+        st.write(csv_to_sql(uploaded_file))  # limit of 200 rows by default    
+    elif admin_udetail:
+        active_user = st.session_state["gd"].specific(admin_users, of_type="user", by="id")
+        active_group = st.session_state["gd"].specific(admin_groups, of_type="group", by="id")
+        st.write("User details: ", active_user)
+    elif admin_gdetail:
+        active_user = st.session_state["gd"].specific(admin_users, of_type="user", by="id")
+        active_group = st.session_state["gd"].specific(admin_groups, of_type="group", by="id")
+        st.write("Group details: ", active_group)
+        st.write("Users in the group:", st.session_state["gd"].users_in_group(admin_groups))
     else:
         st.text(st.session_state["gd"].tree())
         st.write(f"Selected workspace: {active_ws}")

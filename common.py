@@ -2,6 +2,7 @@ from fpdf import FPDF
 from gooddata_sdk import GoodDataSdk, CatalogWorkspace
 from gooddata_pandas import GoodPandas
 import math
+from pandas import read_csv
 from tabulate import tabulate
 from treelib import Tree
 
@@ -32,7 +33,7 @@ class LoadGoodDataSdk:
         else:
             return self._gp.data_frames(ws_id)
 
-    def details(self, wks_id: str = "", by: str="id") -> []:
+    def details(self, wks_id: str="", by: str="id") -> []:
         if not wks_id:
             wks_id = self.first(of_type="workspace")
             print("selecting first workspace as no one submitted")
@@ -112,6 +113,16 @@ class LoadGoodDataSdk:
         # tree.show(line_type="ascii-em")
         return tree
 
+    def users_in_group(self, group_id):
+        listed = []
+        for user in self.users:
+            if not user.relationships:
+                continue
+            for group in user.relationships.user_groups.data:
+                if group and group.id == group_id:
+                    listed.append(user)
+        return listed
+
 def pretty(d, indent=1, char="-"):
     for key, value in d.items():
         if isinstance(value, dict):
@@ -124,6 +135,13 @@ def first_item(dataset, attr=""):
         return None
     else:
         return next(iter(dataset)).__getattribute__(attr)
+
+def encapsulate(column_name: str):
+    if not column_name.startswith('"') and not column_name.endswith('"'):
+        return '"' + column_name + '"'
+    else:
+        return column_name
+
 
 def dataframe_to_pdf(dataframe, pdf_path, num_pages):
     rows_per_page = math.ceil(len(dataframe) / num_pages)
@@ -141,6 +159,26 @@ def dataframe_to_pdf(dataframe, pdf_path, num_pages):
     # Save the PDF
     pdf.output(pdf_path)
 
+
+def csv_to_sql(csv_filename, limit=200):
+    # return single SQL query from CSV content
+    df = read_csv(csv_filename)
+    columns = df.columns
+    # Construct the SQL query using list comprehension
+    rows = [
+        "SELECT "
+        + ", ".join(
+            [
+                f"'{str(row[col])}' AS {encapsulate(col.strip())}"
+                if isinstance(row[col], str)
+                else f"{str(row[col])} AS {encapsulate(col.strip())}"
+                for col in columns
+            ]
+        )
+        for _, row in df.iterrows()
+    ]
+    # return the dictionary of the final SQL query and table_name
+    return {"title": csv_filename, "query": " UNION ALL ".join(rows[:limit]) + ";"}
 
 if __name__ == "__main__":
     # host, token, sdk = init_gd()
