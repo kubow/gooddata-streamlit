@@ -41,6 +41,15 @@ class LoadGoodDataSdk:
             wks_id = self.get_id(wks_id, of_type="workspace")
         return self._sdk.catalog_workspace_content.get_declarative_analytics_model(wks_id).analytics
 
+    def export(self, wks_id: str="", by: str="id", location: str=""):
+        if not wks_id:
+            wks_id = self.first(of_type="workspace")
+            print("selecting first workspace as no one submitted")
+        if by != "id":
+            wks_id = self.get_id(wks_id, of_type="workspace")
+        return self._sdk._catalog_workspace_content.load_declarative_analytics_model(wks_id, location)
+        
+
     def first(self, of_type="user", by="id"):
         if of_type == "user":
             return first_item(self.users, by)
@@ -94,7 +103,7 @@ class LoadGoodDataSdk:
             #return self._sdk.insights.get_insight(value)
             return self.data(ws_id=ws_id, for_insight=value)
         elif of_type == "metric":
-            return self._sdk.catalog_workspace_content.get_metrics_catalog(value)
+            return [m for m in self._sdk.catalog_workspace_content.get_metrics_catalog(ws_id) if m.id == value][0]
     
     def tree(self) -> Tree:
         tree = Tree()

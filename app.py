@@ -65,6 +65,28 @@ def generate_nlg_summary(dataframe):
 
     return summary
 
+def st_folder_selector(st_placeholder, path='.', label='Please, select a folder...'):
+    # get base path (directory)
+    base_path = '.' if path is None or path is '' else path
+    base_path = base_path if os.path.isdir(
+        base_path) else os.path.dirname(base_path)
+    base_path = '.' if base_path is None or base_path is '' else base_path
+    # list files in base path directory
+    files = os.listdir(base_path)
+    if base_path is not '.':
+        files.insert(0, '..')
+    files.insert(0, '.')
+    selected_file = st_placeholder.selectbox(
+        label=label, options=files, key=base_path)
+    selected_path = os.path.normpath(os.path.join(base_path, selected_file))
+    if selected_file is '.':
+        return selected_path
+    if os.path.isdir(selected_path):
+        selected_path = st_folder_selector(st_placeholder=st_placeholder,
+                                         path=selected_path, label=label)
+    return selected_path
+
+
 def main():
     # session variables
     if "analytics" not in st.session_state:
@@ -78,6 +100,7 @@ def main():
 
     with st.sidebar:
         ws_list = st.selectbox("Select a workspace", options=[w.name for w in st.session_state["gd"].workspaces])
+        backup = st.button("Backup selected workspace")
         st.session_state["analytics"] = st.session_state["gd"].details(wks_id=ws_list, by="name")
         with st.expander("Dashboards"):
             ws_dash_list = st.selectbox("Select a dashboard", [d.title for d in st.session_state["analytics"].analytical_dashboards])
@@ -90,17 +113,22 @@ def main():
             display_insight = st.button("Display an insight")
             display_metric = st.button("Display a metric")
             advanced_keydriver = st.button("Key driver analysis")
-            upload_csv = st.button("Upload a CSV")
+        with st.expander("Data preparation"):
+            uploaded_file = st.file_uploader("")
+            upload_csv = st.button("Prepare uploaded file")
         with st.expander("Administration"):
             admin_users = st.selectbox("Select a user", [u.id for u in st.session_state["gd"].users])
             admin_groups = st.selectbox("Select a group", [g.id for g in st.session_state["gd"].groups])
             admin_udetail = st.button("Display user details")
             admin_gdetail = st.button("Display group details")
+        with st.expander("Backup"):
+            file_picker = st.file_uploader("")
+            upload_csv = st.button("Prepare uploaded file")
 
-    # decission tree
     active_ws = st.session_state["gd"].specific(ws_list, of_type="workspace", by="name")
-    uploaded_file = st.file_uploader("Choose a file")
-    if embed_dashboard:
+    if backup:
+        st.write(st.session_state["gd"].export(active_ws))
+    elif embed_dashboard:
         active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
         st.write(f"connecting to: {st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700")
         components.iframe(f"{st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700", 1000, 700)
@@ -136,7 +164,7 @@ def main():
     else:
         st.text(st.session_state["gd"].tree())
         st.write(f"Selected workspace: {active_ws}")
-        st.write("Conenction info", st.session_state["gd"].organization().attributes)
+        st.write("Connection info", st.session_state["gd"].organization().attributes)
         
     
 if __name__ == "__main__":
