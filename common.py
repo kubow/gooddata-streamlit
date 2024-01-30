@@ -107,7 +107,7 @@ class LoadGoodDataSdk:
     
     def tree(self) -> Tree:
         tree = Tree()
-        tree.create_node("GoodData", "root")
+        tree.create_node("Workspace list", "root")
         for workspace in self.workspaces:
             parent_id = workspace.parent_id if workspace.parent_id else "root"
             if tree.get_node(workspace.id):

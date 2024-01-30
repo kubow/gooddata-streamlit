@@ -1,6 +1,7 @@
 
 from common import LoadGoodDataSdk, csv_to_sql
 from component import mycomponent
+import graphviz
 # import enchant
 from openai import OpenAI
 import streamlit as st
@@ -67,24 +68,42 @@ def generate_nlg_summary(dataframe):
 
 def st_folder_selector(st_placeholder, path='.', label='Please, select a folder...'):
     # get base path (directory)
-    base_path = '.' if path is None or path is '' else path
+    base_path = '.' if path is None or path == '' else path
     base_path = base_path if os.path.isdir(
         base_path) else os.path.dirname(base_path)
-    base_path = '.' if base_path is None or base_path is '' else base_path
+    base_path = '.' if base_path is None or base_path == '' else base_path
     # list files in base path directory
     files = os.listdir(base_path)
-    if base_path is not '.':
+    if base_path != '.':
         files.insert(0, '..')
     files.insert(0, '.')
     selected_file = st_placeholder.selectbox(
         label=label, options=files, key=base_path)
     selected_path = os.path.normpath(os.path.join(base_path, selected_file))
-    if selected_file is '.':
+    if selected_file == '.':
         return selected_path
     if os.path.isdir(selected_path):
         selected_path = st_folder_selector(st_placeholder=st_placeholder,
                                          path=selected_path, label=label)
     return selected_path
+
+# Function to generate graph
+def generate_graph(data):
+    graph = graphviz.Digraph()
+
+    root = data['title']
+    # Create nodes for each section
+    for section in data['content']['layout']['sections']:  # IDashboardLayoutSection
+        for item in section['items']:  # IDashboardLayoutItem
+            graph.edge(root, item['widget']['insight']['identifier']['id'])
+            root = item['widget']['insight']['identifier']['id']
+
+    # Create edges between widgets based on their relationships
+    # for widget in data['content']['layout']['sections'][0]['items']:
+    #    for child in widget['widget']['insight']['drills']:
+    #        graph.add_edge(pydot.Edge(widget['widget']['type'], child))
+
+    return graph
 
 
 def main():
@@ -100,8 +119,10 @@ def main():
 
     with st.sidebar:
         ws_list = st.selectbox("Select a workspace", options=[w.name for w in st.session_state["gd"].workspaces])
-        backup = st.button("Backup selected workspace")
         st.session_state["analytics"] = st.session_state["gd"].details(wks_id=ws_list, by="name")
+        with st.expander("Details"):
+            st.text(st.session_state["gd"].tree())
+            st.write("Connection info", st.session_state["gd"].organization().attributes)
         with st.expander("Dashboards"):
             ws_dash_list = st.selectbox("Select a dashboard", [d.title for d in st.session_state["analytics"].analytical_dashboards])
             embed_dashboard = st.button("Embed dashboard")
@@ -122,19 +143,23 @@ def main():
             admin_udetail = st.button("Display user details")
             admin_gdetail = st.button("Display group details")
         with st.expander("Backup"):
-            file_picker = st.file_uploader("")
-            upload_csv = st.button("Prepare uploaded file")
+            st.write("Nothing for now")
+            backup = st.button("Backup selected workspace")
+            #backup_ldm = st.download_button("Backup data model for selected workspace", st.session_state["analytics"])
+            #backup_analytics = st.download_button("Backup analytics for selected workspace", st.session_state["analytics"])
 
     active_ws = st.session_state["gd"].specific(ws_list, of_type="workspace", by="name")
-    if backup:
-        st.write(st.session_state["gd"].export(active_ws))
-    elif embed_dashboard:
+    #if backup_analytics:
+    #    st.write(st.session_state["gd"].export(active_ws))
+    if embed_dashboard:
         active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
         st.write(f"connecting to: {st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700")
         components.iframe(f"{st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700", 1000, 700)
     elif display_dashboard:
         active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
         st.write(f"Selected dashboard: {active_dash}")
+        dashboard_visual = generate_graph(active_dash.to_dict())
+        st.graphviz_chart(dashboard_visual)
     elif advanced_describe:
         active_ins = st.session_state["gd"].specific(df_insight, of_type="insight", by="name", ws_id=active_ws.id)
         st.write("Selected dashboard: " + ws_dash_list)
@@ -162,9 +187,9 @@ def main():
         st.write("Group details: ", active_group)
         st.write("Users in the group:", st.session_state["gd"].users_in_group(admin_groups))
     else:
-        st.text(st.session_state["gd"].tree())
+        
         st.write(f"Selected workspace: {active_ws}")
-        st.write("Connection info", st.session_state["gd"].organization().attributes)
+        
         
     
 if __name__ == "__main__":
