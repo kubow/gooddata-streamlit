@@ -1,7 +1,7 @@
 
 from common import LoadGoodDataSdk, csv_to_sql
 from component import mycomponent
-import graphviz
+
 # import enchant
 from openai import OpenAI
 import streamlit as st
@@ -156,9 +156,10 @@ def main():
         st.write(f"connecting to: {st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700")
         components.iframe(f"{st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700", 1000, 700)
     elif display_dashboard:
-        active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
-        st.write(f"Selected dashboard: {active_dash}")
-        dashboard_visual = generate_graph(active_dash.to_dict())
+        #active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
+        #st.write(f"Selected dashboard: {active_dash}")
+        #dashboard_visual = generate_graph(active_dash.to_dict())
+        dashboard_visual = st.session_state["gd"].schema(ws_dash_list, ws_id=active_ws.id)
         st.graphviz_chart(dashboard_visual)
     elif advanced_describe:
         active_ins = st.session_state["gd"].specific(df_insight, of_type="insight", by="name", ws_id=active_ws.id)
@@ -186,8 +187,7 @@ def main():
         active_group = st.session_state["gd"].specific(admin_groups, of_type="group", by="id")
         st.write("Group details: ", active_group)
         st.write("Users in the group:", st.session_state["gd"].users_in_group(admin_groups))
-    else:
-        
+    else: 
         st.write(f"Selected workspace: {active_ws}")
         
         

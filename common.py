@@ -1,6 +1,7 @@
 from fpdf import FPDF
 from gooddata_sdk import GoodDataSdk, CatalogWorkspace
 from gooddata_pandas import GoodPandas
+import graphviz
 import math
 from pandas import read_csv
 from tabulate import tabulate
@@ -121,6 +122,30 @@ class LoadGoodDataSdk:
                 tree.create_node(workspace.name, workspace.id, parent=parent_id)
         # tree.show(line_type="ascii-em")
         return tree
+
+    def schema(self, dashboard_name, ws_id):
+        graph = graphviz.Digraph()
+        graph.attr(ratio='0.5', fontsize="25")
+        temp = self.specific(dashboard_name, of_type="dashboard", by="name", ws_id=ws_id)
+
+        root = temp.title
+        # Create nodes for each section
+        for section in temp.content['layout']['sections']:  # IDashboardLayoutSection
+            if 'header' in section:
+                graph.edge(root, f"Section-{section['header']['title']}")
+                sec_root = f"Section-{section['header']['title']}"
+            else:
+                sec_root = root
+            for item in section['items']:  # IDashboardLayoutItem
+                if item['widget']['type'] == "insight":
+                    if 'title' in item['widget']:
+                        graph.edge(sec_root, f"Insight-{item['widget']['title']}")
+                    else:
+                        print(f"no title in Insight {item['widget']}")
+                else:
+                    print(f"other than Insight {item['widget']}")
+
+        return graph
 
     def users_in_group(self, group_id):
         listed = []
