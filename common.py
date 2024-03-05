@@ -1,5 +1,5 @@
 from fpdf import FPDF
-from gooddata_sdk import GoodDataSdk, CatalogWorkspace
+from gooddata_sdk import GoodDataSdk
 from gooddata_pandas import GoodPandas
 import graphviz
 import math
@@ -9,6 +9,7 @@ from treelib import Tree
 
 
 class LoadGoodDataSdk:
+    # abstract level wrapper for GoodData Python SDK
     def __init__(self, gd_host: str="", gd_token: str=""):
         print(
             "Your workspace evnironment variables:\n",
@@ -48,7 +49,7 @@ class LoadGoodDataSdk:
             print("selecting first workspace as no one submitted")
         if by != "id":
             wks_id = self.get_id(wks_id, of_type="workspace")
-        return self._sdk._catalog_workspace_content.load_declarative_analytics_model(wks_id, location)
+        return self._sdk._catalog_workspace_content.store_declarative_analytics_model(wks_id, location)
         
 
     def first(self, of_type="user", by="id"):
@@ -82,8 +83,8 @@ class LoadGoodDataSdk:
                 return [w.id for w in temp.metrics if name == w.title][0]
 
     def organization(self):
-        print(f"\nCurrent organization info:")  # ORGANIZATION INFO
-        pretty(self._sdk.catalog_organization.get_organization().to_dict())
+        print(f"\nCurrent organization id:{self._sdk.catalog_organization.get_organization().id}")
+        # pretty(self._sdk.catalog_organization.get_organization().to_dict())
         return self._sdk.catalog_organization.get_organization()
 
     def specific(self, value, of_type="user", by="id", ws_id=""):
@@ -124,28 +125,28 @@ class LoadGoodDataSdk:
         return tree
 
     def schema(self, dashboard_name, ws_id):
-        graph = graphviz.Digraph()
-        graph.attr(ratio='0.5', fontsize="25")
+        schema = graphviz.Digraph()
+        schema.attr(ratio='0.5', fontsize="25")
         temp = self.specific(dashboard_name, of_type="dashboard", by="name", ws_id=ws_id)
 
         root = temp.title
         # Create nodes for each section
         for section in temp.content['layout']['sections']:  # IDashboardLayoutSection
             if 'header' in section:
-                graph.edge(root, f"Section-{section['header']['title']}")
+                schema.edge(root, f"Section-{section['header']['title']}")
                 sec_root = f"Section-{section['header']['title']}"
             else:
                 sec_root = root
             for item in section['items']:  # IDashboardLayoutItem
                 if item['widget']['type'] == "insight":
                     if 'title' in item['widget']:
-                        graph.edge(sec_root, f"Insight-{item['widget']['title']}")
+                        schema.edge(sec_root, f"Insight-{item['widget']['title']}")
                     else:
                         print(f"no title in Insight {item['widget']}")
                 else:
                     print(f"other than Insight {item['widget']}")
 
-        return graph
+        return schema
 
     def users_in_group(self, group_id):
         listed = []

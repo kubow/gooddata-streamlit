@@ -4,6 +4,7 @@ from component import mycomponent
 
 # import enchant
 from openai import OpenAI
+from pathlib import Path
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -98,11 +99,6 @@ def generate_graph(data):
             graph.edge(root, item['widget']['insight']['identifier']['id'])
             root = item['widget']['insight']['identifier']['id']
 
-    # Create edges between widgets based on their relationships
-    # for widget in data['content']['layout']['sections'][0]['items']:
-    #    for child in widget['widget']['insight']['drills']:
-    #        graph.add_edge(pydot.Edge(widget['widget']['type'], child))
-
     return graph
 
 
@@ -116,13 +112,16 @@ def main():
     st.set_page_config(
         layout="wide", page_icon="favicon.ico", page_title="Streamlit-GoodData integration demo"
     )
+    org = st.session_state["gd"].organization()
 
     with st.sidebar:
         ws_list = st.selectbox("Select a workspace", options=[w.name for w in st.session_state["gd"].workspaces])
         st.session_state["analytics"] = st.session_state["gd"].details(wks_id=ws_list, by="name")
         with st.expander("Details"):
+            st.write("Hostname:", org.attributes.hostname)
+            st.write("Organization id:", org.id)
             st.text(st.session_state["gd"].tree())
-            st.write("Connection info", st.session_state["gd"].organization().attributes)
+            st.write("Identity provider:", org.attributes.oauth_issuer_location)
         with st.expander("Dashboards"):
             ws_dash_list = st.selectbox("Select a dashboard", [d.title for d in st.session_state["analytics"].analytical_dashboards])
             embed_dashboard = st.button("Embed dashboard")
@@ -137,13 +136,13 @@ def main():
         with st.expander("Data preparation"):
             uploaded_file = st.file_uploader("")
             upload_csv = st.button("Prepare uploaded file")
-        with st.expander("Administration"):
-            admin_users = st.selectbox("Select a user", [u.id for u in st.session_state["gd"].users])
-            admin_groups = st.selectbox("Select a group", [g.id for g in st.session_state["gd"].groups])
-            admin_udetail = st.button("Display user details")
-            admin_gdetail = st.button("Display group details")
+        # with st.expander("Administration"):
+        #     admin_users = st.selectbox("Select a user", [u.id for u in st.session_state["gd"].users])
+        #     admin_groups = st.selectbox("Select a group", [g.id for g in st.session_state["gd"].groups])
+        #     admin_udetail = st.button("Display user details")
+        #     admin_gdetail = st.button("Display group details")
         with st.expander("Backup"):
-            st.write("Nothing for now")
+            st.write("Need to find a way to backup and restore using python sdk")
             backup = st.button("Backup selected workspace")
             #backup_ldm = st.download_button("Backup data model for selected workspace", st.session_state["analytics"])
             #backup_analytics = st.download_button("Backup analytics for selected workspace", st.session_state["analytics"])
@@ -151,7 +150,14 @@ def main():
     active_ws = st.session_state["gd"].specific(ws_list, of_type="workspace", by="name")
     #if backup_analytics:
     #    st.write(st.session_state["gd"].export(active_ws))
-    if embed_dashboard:
+    if backup:
+        st.session_state["gd"].export(wks_id=active_ws.id, location=Path.cwd())
+        exported_path = Path.cwd().joinpath("gooddata_layouts", org.id, "workspaces", active_ws.id, "analytics_model")
+        st.write(f"Workspace: {active_ws.name} backed up to /gooddata_layouts/..., below a list of folders")
+        for folder in exported_path.iterdir():
+            for file in exported_path.joinpath(folder).glob("*.yaml"):
+                st.write(file)
+    elif embed_dashboard:
         active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
         st.write(f"connecting to: {st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700")
         components.iframe(f"{st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700", 1000, 700)
@@ -178,15 +184,15 @@ def main():
     elif upload_csv and uploaded_file is not None:
         st.write("Create a new SQL dataset and paste the SQL query (final version should post it directly to the model)")
         st.write(csv_to_sql(uploaded_file))  # limit of 200 rows by default    
-    elif admin_udetail:
-        active_user = st.session_state["gd"].specific(admin_users, of_type="user", by="id")
-        active_group = st.session_state["gd"].specific(admin_groups, of_type="group", by="id")
-        st.write("User details: ", active_user)
-    elif admin_gdetail:
-        active_user = st.session_state["gd"].specific(admin_users, of_type="user", by="id")
-        active_group = st.session_state["gd"].specific(admin_groups, of_type="group", by="id")
-        st.write("Group details: ", active_group)
-        st.write("Users in the group:", st.session_state["gd"].users_in_group(admin_groups))
+    # elif admin_udetail:
+    #     active_user = st.session_state["gd"].specific(admin_users, of_type="user", by="id")
+    #     active_group = st.session_state["gd"].specific(admin_groups, of_type="group", by="id")
+    #     st.write("User details: ", active_user)
+    # elif admin_gdetail:
+    #     active_user = st.session_state["gd"].specific(admin_users, of_type="user", by="id")
+    #     active_group = st.session_state["gd"].specific(admin_groups, of_type="group", by="id")
+    #     st.write("Group details: ", active_group)
+    #     st.write("Users in the group:", st.session_state["gd"].users_in_group(admin_groups))
     else: 
         st.write(f"Selected workspace: {active_ws}")
         
