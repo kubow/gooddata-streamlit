@@ -44,7 +44,7 @@ openai==1.6.1
 packaging==23.2
 pandas==1.5.3
 phik==0.12.4
-pillow==10.2.0
+pillow==10.3.0
 protobuf==4.25.1
 pyarrow==14.0.2
 pydantic==2.5.3
