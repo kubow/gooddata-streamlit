@@ -78,7 +78,7 @@ treelib==1.7.0
 typing_extensions==4.9.0
 tzdata==2023.4
 tzlocal==5.2
-urllib3==2.1.0
+urllib3==2.2.2
 validators==0.22.0
 visions==0.7.4
 watchdog==3.0.0
