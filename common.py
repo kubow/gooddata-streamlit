@@ -125,6 +125,7 @@ class LoadGoodDataSdk:
         return tree
 
     def schema(self, dashboard_name, ws_id):
+        # create a dashboard schema by parsing its sections and visuals
         schema = graphviz.Digraph()
         schema.attr(ratio='0.5', fontsize="25")
         temp = self.specific(dashboard_name, of_type="dashboard", by="name", ws_id=ws_id)
@@ -132,7 +133,7 @@ class LoadGoodDataSdk:
         root = temp.title
         # Create nodes for each section
         for section in temp.content['layout']['sections']:  # IDashboardLayoutSection
-            if 'header' in section:
+            if 'header' in section and len(section['header']) > 0:
                 schema.edge(root, f"Section-{section['header']['title']}")
                 sec_root = f"Section-{section['header']['title']}"
             else:
