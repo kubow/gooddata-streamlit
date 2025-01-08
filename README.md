@@ -33,7 +33,6 @@ The first step is to fork the repository or download it and publish to your own 
 ## TO-DO
 
 - [ ] Better dashboard handling
-- [ ] Users and Groups administer (security issue)
 - [ ] Demo content deployment
 - [ ] PDF generator (for insights and dashboards)
 
