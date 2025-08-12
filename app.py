@@ -49,6 +49,8 @@ def main():
         st.session_state["analytics"] = []
     if "gd" not in st.session_state:
         st.session_state["gd"] = LoadGoodDataSdk(st.secrets["GOODDATA_HOST"], st.secrets["GOODDATA_TOKEN"])
+    if "timing" not in st.session_state:
+        st.session_state["timing"] = []
 
     st.set_page_config(
         layout="wide", page_icon="favicon.ico", page_title="Streamlit-GoodData integration demo"
@@ -73,16 +75,17 @@ def main():
         with st.expander("Data actions"):
             df_insight = st.selectbox("Select an Insight",
                                       [d.title for d in st.session_state["analytics"].visualization_objects])
-            df_metric = st.selectbox("Select a Dataset", [m.title for m in st.session_state["analytics"].metrics])
             ds_list = st.selectbox("Select a data source",
                                    [d.name for d in st.session_state["gd"].datasources])
-            clear_cache = st.button("Clear cache")
-            display_insight = st.button("Display an insight")
-            display_metric = st.button("Display a metric")
-            # advanced_keydriver = st.button("Key driver analysis")
+            clear_cache = st.button("Clear cache for selected data source")
+            display_insight = st.button("Test Insight Retrieval")
         with st.expander("Data preparation"):
-            uploaded_file = st.file_uploader("")
-            upload_csv = st.button("Prepare uploaded file")
+            prep_option = st.radio(
+                "1. Choose data preparation method:",
+                ("CSV as SQL dataset", "CSV S3 uploader", "LDM preparation")
+            )
+            uploaded_file = st.file_uploader("2. Upload your CSV file", type=["csv"])
+            upload_csv = st.button("3. Process CSV")
         with st.expander("Backup & Restore"):
             st.write("Need to find a way to backup and restore using python sdk")
             backup = st.button("Backup selected workspace")
@@ -107,9 +110,9 @@ def main():
         t = time_it()
         active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id)
         st.write(
-            f"connecting to: {st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700")
+            f"connecting to: {st.secrets['GOODDATA_HOST']}dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700")
         components.iframe(
-            f"{st.secrets['GOODDATA_HOST']}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700",
+            f"{st.secrets['GOODDATA_HOST']}dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{active_dash.id}?showNavigation=false&setHeight=700",
             1000, 700)
         st.write(f"dashboard loaded in {time_it(t, True)*1000} milliseconds")
     elif display_dashboard:
@@ -123,21 +126,65 @@ def main():
     # st.write("Selected dashboard: " + ws_dash_list)
     # st.write(st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=active_ws.id))
     # st.write(generate_nlg_summary(active_ins))
-    elif display_metric:
-        active_ds = st.session_state["gd"].specific(df_metric, of_type="metric", by="name", ws_id=active_ws.id)
-        st.write(f"Selected metric: {active_ds}")
     elif display_insight:
-        t = time_it()
-        active_ins = st.session_state["gd"].specific(df_insight, of_type="insight", by="name", ws_id=active_ws.id)
-        st.write(f"Visualization loaded in {'%.2f' % (time_it(t, True) * 1000)} milliseconds")
-        st.dataframe(active_ins)
-        # st.write(ProfileReport(active_ins, title="Pandas Profiling Report"))
+        import datetime
+        import pandas as pd
+        st.info(f"Testing retrieval of insight '{df_insight}' from data source '{ds_list}'...")
+        t0 = time_it()
+        insight_obj = next((d for d in st.session_state["analytics"].visualization_objects if d.title == df_insight), None)
+        if insight_obj is not None:
+            try:
+                active_ins = st.session_state["gd"].specific(df_insight, of_type="insight", by="name", ws_id=active_ws.id)
+                t1 = time_it(t0, True)
+                st.success(f"Insight retrieved in {t1:.2f} seconds.")
+                # Append timing info
+                # Store timestamp as pandas Timestamp for better plotting
+                import pandas as pd
+                st.session_state["timing"].append({
+                    "insight": df_insight,
+                    "datasource": ds_list,
+                    "timestamp": pd.Timestamp.now(),
+                    "elapsed": t1
+                })
+                # Show time series plot for ALL insights
+                if st.session_state["timing"]:
+                    timing_df = pd.DataFrame(st.session_state["timing"])
+                    timing_df["timestamp"] = pd.to_datetime(timing_df["timestamp"])
+                    timing_df = timing_df.sort_values(["insight", "timestamp"])
+                    import altair as alt
+                    st.caption("Time series of retrieval times for all insights.")
+                    chart = alt.Chart(timing_df).mark_line(point=True).encode(
+                        x=alt.X('timestamp:T', title='Timestamp'),
+                        y=alt.Y('elapsed:Q', title='Retrieval time (s)'),
+                        color=alt.Color('insight:N', title='Insight'),
+                        tooltip=['insight', 'datasource', 'timestamp', 'elapsed']
+                    ).properties(width='container', height=350)
+                    st.altair_chart(chart, use_container_width=True)
+                    st.dataframe(
+                        timing_df[["insight","datasource","timestamp","elapsed"]]
+                        .rename(columns={"elapsed":"Retrieval time (s)", "insight": "Insight", "datasource": "Data source", "timestamp": "Timestamp"})
+                    )
+                # Show the dataframe with the insight's content
+                st.caption("Insight object data frame (actual data):")
+                st.dataframe(active_ins)
+
+            except Exception as e:
+                st.error(f"Error retrieving insight: {e}")
+        else:
+            st.warning("Selected insight not found.")
+
     # elif advanced_keydriver:
     # st.write("Advanced keydriver")
     elif upload_csv and uploaded_file is not None:
-        st.write(
-            "Create a new SQL dataset and paste the SQL query (final version should post it directly to the model)")
-        st.write(csv_to_sql(uploaded_file))  # limit of 200 rows by default    
+        if prep_option == "CSV as SQL dataset":
+            st.write("Create a new SQL dataset and paste the SQL query (final version should post it directly to the model)")
+            st.write(csv_to_sql(uploaded_file))  # limit of 200 rows by default
+        elif prep_option == "CSV S3 uploader":
+            st.info("[Placeholder] CSV S3 uploader logic will be implemented here.")
+        elif prep_option == "LDM preparation":
+            st.write("LDM Preparation: Generating request based on CSV fields...")
+            st.write(csv_to_ldm_request(uploaded_file))
+
     # elif admin_udetail:
     #     active_user = st.session_state["gd"].specific(admin_users, of_type="user", by="id")
     #     active_group = st.session_state["gd"].specific(admin_groups, of_type="group", by="id")
@@ -148,7 +195,11 @@ def main():
     #     st.write("Group details: ", active_group)
     #     st.write("Users in the group:", st.session_state["gd"].users_in_group(admin_groups))
     else:
-        st.write(f"Selected workspace: {active_ws}")
+        st.write(f"Selected workspace: {active_ws.name}")
+        st.write("Dependent Entities Graph:")
+        # Inject Cytoscape HTML into Streamlit
+        components.html(html_cytoscape(st.session_state["gd"].ws_schema(active_ws.id)), height=650)
+
 
 
 if __name__ == "__main__":
