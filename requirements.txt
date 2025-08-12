@@ -16,33 +16,37 @@ blinker==1.9.0
     # via streamlit
 brotli==1.1.0
     # via gooddata-sdk
+build==1.3.0
+    # via pip-tools
 cachetools==6.1.0
     # via streamlit
 cattrs==24.1.1
     # via gooddata-sdk
-certifi==2025.7.9
+certifi==2025.8.3
     # via requests
-charset-normalizer==3.4.2
+charset-normalizer==3.4.3
     # via requests
 click==8.2.1
-    # via streamlit
-contourpy==1.3.2
+    # via
+    #   pip-tools
+    #   streamlit
+contourpy==1.3.3
     # via matplotlib
 cycler==0.12.1
     # via matplotlib
-fonttools==4.58.5
+fonttools==4.59.0
     # via matplotlib
 fpdf==1.7.2
     # via -r requirements.in
 gitdb==4.0.12
     # via gitpython
-gitpython==3.1.44
+gitpython==3.1.45
     # via streamlit
-gooddata-api-client==1.46.0
+gooddata-api-client==1.48.0
     # via gooddata-sdk
-gooddata-pandas==1.46.0
+gooddata-pandas==1.48.0
     # via -r requirements.in
-gooddata-sdk==1.46.0
+gooddata-sdk==1.48.0
     # via
     #   -r requirements.in
     #   gooddata-pandas
@@ -55,21 +59,21 @@ jinja2==3.1.6
     #   -r requirements.in
     #   altair
     #   pydeck
-jsonschema==4.24.0
+jsonschema==4.25.0
     # via altair
 jsonschema-specifications==2025.4.1
     # via jsonschema
-kiwisolver==1.4.8
+kiwisolver==1.4.9
     # via matplotlib
 markupsafe==3.0.2
     # via jinja2
-matplotlib==3.10.3
+matplotlib==3.10.5
     # via
     #   -r requirements.in
     #   seaborn
-narwhals==1.46.0
+narwhals==2.1.1
     # via altair
-numpy==2.3.1
+numpy==2.3.2
     # via
     #   contourpy
     #   matplotlib
@@ -81,6 +85,7 @@ numpy==2.3.1
 packaging==25.0
     # via
     #   altair
+    #   build
     #   matplotlib
     #   streamlit
 pandas==2.3.1
@@ -93,9 +98,11 @@ pillow==11.3.0
     # via
     #   matplotlib
     #   streamlit
+pip-tools==7.5.0
+    # via -r requirements.in
 protobuf==6.31.1
     # via streamlit
-pyarrow==20.0.0
+pyarrow==21.0.0
     # via
     #   -r requirements.in
     #   streamlit
@@ -105,6 +112,10 @@ pygments==2.19.2
     # via -r requirements.in
 pyparsing==3.2.3
     # via matplotlib
+pyproject-hooks==1.2.0
+    # via
+    #   build
+    #   pip-tools
 python-dateutil==2.9.0.post0
     # via
     #   gooddata-api-client
@@ -127,11 +138,11 @@ requests==2.32.4
     # via
     #   gooddata-sdk
     #   streamlit
-rpds-py==0.26.0
+rpds-py==0.27.0
     # via
     #   jsonschema
     #   referencing
-scipy==1.16.0
+scipy==1.16.1
     # via -r requirements.in
 seaborn==0.13.2
     # via -r requirements.in
@@ -141,7 +152,7 @@ six==1.17.0
     #   treelib
 smmap==5.0.2
     # via gitdb
-streamlit==1.46.1
+streamlit==1.48.0
     # via -r requirements.in
 tabulate==0.9.0
     # via -r requirements.in
@@ -149,7 +160,7 @@ tenacity==9.1.2
     # via streamlit
 toml==0.10.2
     # via streamlit
-tornado==6.5.1
+tornado==6.5.2
     # via streamlit
 treelib==1.8.0
     # via -r requirements.in
@@ -165,3 +176,9 @@ urllib3==2.5.0
     #   requests
 watchdog==6.0.0
     # via streamlit
+wheel==0.45.1
+    # via pip-tools
+
+# The following packages are considered to be unsafe in a requirements file:
+# pip
+# setuptools
