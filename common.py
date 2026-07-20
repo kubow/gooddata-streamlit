@@ -27,6 +27,8 @@ class LoadGoodDataSdk:
             "Your workspace environment variables:\n",
             f"GOODDATA_HOST: {gd_host} / GOODDATA_API_TOKEN: {len(gd_token)} characters",
         )
+        self._host = gd_host.rstrip("/") if gd_host else ""
+        self._token = gd_token
         if gd_host:
             self._sdk = GoodDataSdk.create(gd_host, gd_token)
             self._gp = GoodPandas(gd_host, gd_token)
@@ -55,21 +57,27 @@ class LoadGoodDataSdk:
                 CatalogWorkspace(workspace_id=ent_id, name=name, parent_id=parent)
             )
         elif of_type == 'us':  # user
+            name_parts = name.split(" ")
+            firstname = name_parts[0] if name_parts else ""
+            lastname = name_parts[-1] if name_parts else ""
             self._sdk.catalog_user.create_or_update_user(
-                CatalogUser.init(user_id=ent_id, firstname=name.split(" ")[0], lastname=name.split(" ")[-1],
+                CatalogUser.init(user_id=ent_id, firstname=firstname, lastname=lastname,
                                  user_group_ids=[parent])
             )
         elif of_type == 'ug':  # user group
             self._sdk.catalog_user.create_or_update_user_group(
                 CatalogUserGroup.init(user_group_id=ent_id, user_group_name=name)
             )
-        if of_type == 'wf':  # workspace filter
+        elif of_type == 'wf':  # workspace filter
             self._sdk.catalog_workspace.create_or_update(
                 CatalogWorkspace(workspace_id=ent_id, name=name, parent_id=parent)
             )
         elif of_type == 'uf':  # user filter
+            name_parts = name.split(" ")
+            firstname = name_parts[0] if name_parts else ""
+            lastname = name_parts[-1] if name_parts else ""
             self._sdk.catalog_user.create_or_update_user(
-                CatalogUser.init(user_id=ent_id, firstname=name.split(" ")[0], lastname=name.split(" ")[-1],
+                CatalogUser.init(user_id=ent_id, firstname=firstname, lastname=lastname,
                                  user_group_ids=[parent])
             )
 
@@ -89,7 +97,9 @@ class LoadGoodDataSdk:
                     return self._sdk.tables.for_visualization(workspace_id=ws_id, visualization=x)
 
     def details(self, wks_id: str = "", by: str = "id") -> CatalogDeclarativeAnalyticsLayer | None:
-        # display details about workspace in detail (all objects within)
+        """Display details about workspace in detail (all objects within).
+        Returns analytics object via SDK.
+        """
         if not wks_id:
             wks_id = self.first(of_type="workspace")
             print("selecting first workspace as no one submitted")
@@ -131,7 +141,8 @@ class LoadGoodDataSdk:
             return first_item(analytics.analytical_dashboards, by)
         elif of_type == "workspace":
             return first_item(self.workspaces, by)
-        return None
+        else:
+            return None
 
     def get_id(self, name, of_type, main=""):
         if not name:
@@ -470,6 +481,207 @@ class LoadGoodDataSdk:
             # Return what we have; callers can handle empty lists
             pass
         return datasets_rows, columns_rows
+
+    def process_ldm_complete(self, wks_id: str) -> tuple[list[dict], list[dict], list[dict]]:
+        """Process LDM via SDK and return (datasets_rows, columns_rows, refs_rows).
+        
+        Comprehensive processing including dataset types, all attribute/fact fields,
+        and references. This is the main method for LDM processing.
+        """
+        datasets_rows: list[dict] = []
+        columns_rows: list[dict] = []
+        refs_rows: list[dict] = []
+        try:
+            ldm = self.get_declarative_ldm(wks_id)
+            ds_list = getattr(getattr(ldm, "ldm", None), "datasets", []) or []
+            for ds in ds_list:
+                ds_id = getattr(ds, "id", None)
+                ds_title = getattr(ds, "title", None) or getattr(ds, "name", None)
+                # Heuristic dataset type detection
+                try:
+                    _attrs = getattr(ds, "attributes", []) or []
+                    ds_is_date = any(
+                        (getattr(a, "granularity", None) or (getattr(getattr(a, "to_dict", None), "__call__", None)() or {}).get("granularity"))
+                        for a in _attrs
+                    )
+                except Exception:
+                    ds_is_date = False
+                datasets_rows.append({
+                    "dataset_id": ds_id,
+                    "dataset_title": ds_title,
+                    "description": getattr(ds, "description", None),
+                    "tags": getattr(ds, "tags", None),
+                    "dataset_type": "date" if ds_is_date else "regular",
+                })
+                # Attributes
+                for attr in getattr(ds, "attributes", []) or []:
+                    cdict = getattr(attr, "to_dict", None)
+                    as_dict = cdict() if callable(cdict) else getattr(attr, "__dict__", {})
+                    src_col_val = as_dict.get("source_column") if isinstance(as_dict, dict) else None
+                    src_table = None
+                    if isinstance(src_col_val, dict):
+                        src_table = src_col_val.get("table") or src_col_val.get("name") or src_col_val.get("dataset")
+                    columns_rows.append({
+                        "dataset_id": ds_id,
+                        "dataset_title": ds_title,
+                        "column_id": getattr(attr, "id", None),
+                        "column_title": getattr(attr, "title", None),
+                        "column_description": getattr(attr, "description", None),
+                        "tags": getattr(attr, "tags", None),
+                        "data_type": as_dict.get("data_type") if isinstance(as_dict, dict) else None,
+                        "source_column": (as_dict.get("source_column") if isinstance(as_dict, dict) else None),
+                        "source_table": src_table,
+                        "column_type": "attribute",
+                        "granularity": as_dict.get("granularity") if isinstance(as_dict, dict) else None,
+                        "label": as_dict.get("label") if isinstance(as_dict, dict) else None,
+                        "is_anchor": as_dict.get("is_anchor") if isinstance(as_dict, dict) else getattr(attr, "is_anchor", None),
+                        "default_label": as_dict.get("default_label") if isinstance(as_dict, dict) else getattr(attr, "default_label", None),
+                        "sort_label": as_dict.get("sort_label") if isinstance(as_dict, dict) else getattr(attr, "sort_label", None),
+                        "labels": as_dict.get("labels") if isinstance(as_dict, dict) else None,
+                    })
+                # Facts
+                for fact in getattr(ds, "facts", []) or []:
+                    cdict = getattr(fact, "to_dict", None)
+                    as_dict = cdict() if callable(cdict) else getattr(fact, "__dict__", {})
+                    src_col_val = as_dict.get("source_column") if isinstance(as_dict, dict) else None
+                    src_table = None
+                    if isinstance(src_col_val, dict):
+                        src_table = (src_col_val.get("table") or src_col_val.get("name") or src_col_val.get("dataset"))
+                    columns_rows.append({
+                        "dataset_id": ds_id,
+                        "dataset_title": ds_title,
+                        "column_id": getattr(fact, "id", None),
+                        "column_title": getattr(fact, "title", None),
+                        "column_description": getattr(fact, "description", None),
+                        "tags": getattr(fact, "tags", None),
+                        "data_type": as_dict.get("data_type") if isinstance(as_dict, dict) else None,
+                        "source_column": (as_dict.get("source_column") if isinstance(as_dict, dict) else None),
+                        "source_table": src_table,
+                        "column_type": "fact",
+                        "granularity": None,
+                        "label": None,
+                        "aggregation": as_dict.get("aggregation") if isinstance(as_dict, dict) else getattr(fact, "aggregation", None),
+                    })
+                # References (best-effort)
+                try:
+                    ds_dict = getattr(ds, "to_dict", lambda: {})()
+                    for ref in (ds_dict.get("references") or []):
+                        refs_rows.append({
+                            "from_dataset_id": ds_id,
+                            "from_dataset_title": ds_title,
+                            "to_dataset_id": ref.get("dataset") or ref.get("id"),
+                            "columns": ref.get("source_columns") or ref.get("columns"),
+                        })
+                except Exception:
+                    pass
+        except Exception:
+            # Return what we have; callers can handle empty lists
+            pass
+        return datasets_rows, columns_rows, refs_rows
+
+    def get_pdm_table_mapping(self, wks_id: str) -> dict:
+        """Get table to data source mapping from PDM via SDK.
+        Returns dict mapping table names (lowercase) to data source IDs.
+        """
+        table_to_ds = {}
+        try:
+            pdm = self._sdk.catalog_workspace_content.get_declarative_pdm(wks_id)
+            pdm_dict = getattr(pdm, "to_dict", lambda: {})()
+            # Heuristic traversal
+            def _walk(obj):
+                out = []
+                if isinstance(obj, dict):
+                    for k, v in obj.items():
+                        out.extend(_walk(v))
+                elif isinstance(obj, list):
+                    for it in obj:
+                        out.extend(_walk(it))
+                else:
+                    return []
+                return out
+            tables = pdm_dict.get("tables") or _walk(pdm_dict) if isinstance(pdm_dict, dict) else []
+            # Build name->ds map
+            if isinstance(tables, list):
+                for t in tables:
+                    if isinstance(t, dict):
+                        tname = t.get("name") or t.get("id")
+                        dsid = t.get("dataSourceId") or t.get("data_source_id")
+                        if tname and dsid:
+                            key_full = str(tname).lower()
+                            key_base = key_full.split(".")[-1]
+                            table_to_ds[key_full] = dsid
+                            table_to_ds[key_base] = dsid
+        except Exception:
+            pass
+        return table_to_ds
+
+    def load_ldm(self, wks_id: str) -> tuple[list[dict], list[dict], list[dict]]:
+        """High-level method to load LDM: tries SDK first, falls back to API.
+        Returns (datasets_rows, columns_rows, refs_rows).
+        """
+        # Try SDK first
+        try:
+            return self.process_ldm_complete(wks_id)
+        except Exception:
+            # Fallback to API via helpers
+            try:
+                from helpers import get_ldm_via_rest, process_ldm_rest_response
+                if self._host and self._token:
+                    resp = get_ldm_via_rest(self._host, self._token, wks_id)
+                    if resp.status_code == 200:
+                        data = resp.json() or {}
+                        return process_ldm_rest_response(data)
+            except Exception:
+                pass
+        return [], [], []
+
+    def load_pdm_mapping(self, wks_id: str) -> dict:
+        """High-level method to load PDM table mapping: tries SDK first, falls back to API.
+        Returns dict mapping table names (lowercase) to data source IDs.
+        """
+        # Try SDK first
+        try:
+            return self.get_pdm_table_mapping(wks_id)
+        except Exception:
+            # Fallback to API via helpers
+            try:
+                from helpers import get_pdm_via_rest, process_pdm_rest_response
+                if self._host and self._token:
+                    resp = get_pdm_via_rest(self._host, self._token, wks_id)
+                    if resp.status_code == 200:
+                        data = resp.json() or {}
+                        return process_pdm_rest_response(data)
+            except Exception:
+                pass
+        return {}
+
+    def load_filter_contexts(self, wks_id: str, dashes_df=None) -> list[dict]:
+        """High-level method to load filter contexts: tries SDK first (from analytics), falls back to API.
+        Returns list of filter context rows.
+        """
+        from pandas import DataFrame
+        from helpers import get_filter_contexts, process_filter_contexts_rest_response
+        
+        # Precompute dashboard usage
+        used_counts = {}
+        if dashes_df is not None:
+            try:
+                if isinstance(dashes_df, DataFrame) and not dashes_df.empty and "filter_context_id" in dashes_df.columns:
+                    for v, cnt in dashes_df["filter_context_id"].value_counts().items():
+                        used_counts[str(v)] = int(cnt)
+            except Exception:
+                used_counts = {}
+        
+        # Try API (filter contexts are typically not in analytics object, so go straight to API)
+        try:
+            if self._host and self._token:
+                resp = get_filter_contexts(self._host, self._token, wks_id)
+                if resp.status_code == 200:
+                    data = resp.json() or {}
+                    return process_filter_contexts_rest_response(data, used_counts)
+        except Exception:
+            pass
+        return []
 
 
 def pretty(d, indent=1, char="-"):

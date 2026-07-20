@@ -1,5 +1,6 @@
 from requests import exceptions, get, post, delete
 from time import time
+import json
 
 def html_cytoscape(elements_json: str):
     html_code = f"""
@@ -15,23 +16,46 @@ def html_cytoscape(elements_json: str):
 
         <!-- Dagre for hierarchical layouts -->
         <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
-        <script src="https://unpkg.com/cytoscape-dagre/cytoscape-dagre.js"></script>
+        <script src="https://unpkg.com/cytoscape-dagre@3.0.0/cytoscape-dagre.js"></script>
 
         <style>
+            html,
+            body {{
+                margin: 0;
+                padding: 0;
+                background: #d6d9df;
+                color: #111827;
+                font-family: Avenir, "Helvetica Neue", Arial, sans-serif;
+            }}
             #cy {{
                 width: 100%;
                 height: 600px;
-                border: 1px solid black;
+                border: 1px solid #9ca3af;
+                border-radius: 8px;
+                background:
+                    radial-gradient(circle at 1px 1px, rgba(17, 24, 39, 0.12) 1px, transparent 0),
+                    linear-gradient(180deg, #e5e7eb 0%, #cbd5e1 100%);
+                background-size: 24px 24px, 100% 100%;
+                box-sizing: border-box;
             }}
             .tooltip {{
                 position: absolute;
                 z-index: 1000;
-                background: white;
-                padding: 5px;
-                border-radius: 5px;
-                font-size: 20px;
-                box-shadow: 2px 2px 5px rgba(0,0,0,0.2);
+                max-width: 360px;
+                background: rgba(17, 24, 39, 0.96);
+                color: #f9fafb;
+                padding: 10px 12px;
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 8px;
+                font-size: 13px;
+                line-height: 1.35;
+                box-shadow: 0 18px 45px rgba(15, 23, 42, 0.28);
                 display: none;
+                pointer-events: none;
+            }}
+            .tooltip ul {{
+                margin: 6px 0 0;
+                padding-left: 18px;
             }}
         </style>
     </head>
@@ -47,18 +71,52 @@ def html_cytoscape(elements_json: str):
         document.addEventListener("DOMContentLoaded", function() {{
             console.log("Cytoscape:", typeof cytoscape !== 'undefined' ? "Loaded" : "NOT Loaded");
             console.log("Dagre:", typeof dagre !== 'undefined' ? "Loaded" : "NOT Loaded");
-            console.log("cytoscape-dagre:", typeof cytoscapeDagre !== 'undefined' ? "Loaded" : "NOT Loaded");
+            console.log("cytoscape-dagre:", typeof window.cytoscapeDagre === 'function' ? "Loaded" : "Not exposed as global");
 
-            // Ensure Dagre extension is available before use
-            if (typeof cytoscapeDagre !== 'undefined') {{
-                console.log("Registering cytoscape-dagre...");
-                cytoscape.use(cytoscapeDagre);
-            }} else {{
-                console.error("ERROR: cytoscape-dagre did not load properly.");
+            if (typeof cytoscape === 'undefined') {{
+                console.error("ERROR: Cytoscape did not load properly.");
                 return;
             }}
 
+            function getGraphLayout() {{
+                const dagreLayout = {{
+                    name: 'dagre',
+                    rankDir: 'TB',
+                    nodeSep: 50,
+                    edgeSep: 20,
+                    rankSep: 75
+                }};
+
+                if (typeof window.cytoscapeDagre === 'function') {{
+                    try {{
+                        console.log("Registering cytoscape-dagre...");
+                        cytoscape.use(window.cytoscapeDagre);
+                        return dagreLayout;
+                    }} catch (error) {{
+                        if (!String(error?.message || error).toLowerCase().includes('already')) {{
+                            console.warn("cytoscape-dagre registration failed; checking whether layout is already available.", error);
+                        }}
+                    }}
+                }}
+
+                try {{
+                    const testCy = cytoscape({{ headless: true, elements: [] }});
+                    testCy.layout(dagreLayout).run();
+                    testCy.destroy();
+                    return dagreLayout;
+                }} catch (error) {{
+                    console.warn("cytoscape-dagre is unavailable; using built-in breadthfirst layout.", error);
+                    return {{
+                        name: 'breadthfirst',
+                        directed: true,
+                        padding: 50,
+                        spacingFactor: 1.2
+                    }};
+                }}
+            }}
+
             const elements = {elements_json};
+            const graphLayout = getGraphLayout();
 
             var cy = cytoscape({{
                 container: document.getElementById('cy'),
@@ -68,88 +126,100 @@ def html_cytoscape(elements_json: str):
                         selector: 'node',
                         style: {{
                             'label': 'data(label)',
-                            'text-valign': 'center',
-                            'color': 'black',
                             'text-halign': 'center',
+                            'text-valign': 'bottom',
+                            'text-margin-y': 9,
+                            'color': '#ffffff',
                             'font-size': '12px',
-                            'width': 60,
-                            'height': 60,
-                            'background-fit': 'contain',
-                            'background-color': 'transparent'
+                            'font-weight': 700,
+                            'font-family': 'Avenir, Helvetica Neue, Arial, sans-serif',
+                            'text-wrap': 'wrap',
+                            'text-max-width': 150,
+                            'text-background-color': '#111827',
+                            'text-background-opacity': 0.94,
+                            'text-background-padding': 4,
+                            'text-background-shape': 'roundrectangle',
+                            'width': 58,
+                            'height': 58,
+                            'shape': 'round-rectangle',
+                            'background-color': '#64748b',
+                            'border-width': 3,
+                            'border-color': '#111827',
+                            'shadow-blur': 12,
+                            'shadow-color': 'rgba(15, 23, 42, 0.32)',
+                            'shadow-offset-x': 0,
+                            'shadow-offset-y': 3,
+                            'shadow-opacity': 0.85
                         }}
                     }},
                     {{
                         selector: 'node[type="dataset"]',
                         style: {{
-                            'background-image': 'https://raw.githubusercontent.com/kubow/Data_playground/main/image/dataset.png',  // Database icon
-                            'background-fit': 'contain',
-                            'background-opacity': 0,
-                            'shape': 'rectangle',
-                            'width': '50px',
-                            'height': '50px'
+                            'background-color': '#0f766e',
+                            'shape': 'round-rectangle'
                         }}
                     }},
                     {{
                         selector: 'node[type="attribute"]',
                         style: {{
-                            'background-image': 'https://raw.githubusercontent.com/kubow/Data_playground/main/image/attr.png',  // Attribute key icon
-                            'background-fit': 'contain',
-                            'background-opacity': 0,
-                            'shape': 'rectangle',
-                            'width': '50px',
-                            'height': '50px'
+                            'background-color': '#2563eb',
+                            'shape': 'ellipse'
                         }}
                     }},
                     {{
                         selector: 'node[type="fact"], node[type="metric"]',
                         style: {{
-                            'background-image': 'https://raw.githubusercontent.com/kubow/Data_playground/main/image/metric.png',  // Bar chart metric icon
-                            'background-fit': 'contain',
-                            'background-opacity': 0,
-                            'shape': 'rectangle',
-                            'width': '50px',
-                            'height': '50px'
+                            'background-color': '#f97316',
+                            'shape': 'diamond'
                         }}
                     }},
                     {{
                         selector: 'node[type="visualizationObject"]',
                         style: {{
-                            'background-image': 'https://raw.githubusercontent.com/kubow/Data_playground/main/image/visual.png',  // Data visualization icon
-                            'background-fit': 'contain',
-                            'background-opacity': 1,
-                            'shape': 'rectangle',
-                            'width': '50px',
-                            'height': '50px'
+                            'background-color': '#7c3aed',
+                            'shape': 'round-rectangle',
+                            'width': 102,
+                            'height': 102
                         }}
                     }},
                     {{
                         selector: 'node[type="analyticalDashboard"]',
                         style: {{
-                            'background-image': 'https://raw.githubusercontent.com/kubow/Data_playground/main/image/dashboard.png',  // Dashboard panel icon
-                            'background-fit': 'contain',
-                            'background-opacity': 1,
-                            'shape': 'rectangle',
-                            'width': '50px',
-                            'height': '50px'
+                            'background-color': '#0891b2',
+                            'shape': 'hexagon',
+                            'width': 102,
+                            'height': 102
+                        }}
+                    }},
+                    {{
+                        selector: 'node:selected',
+                        style: {{
+                            'border-color': '#facc15',
+                            'border-width': 5
                         }}
                     }},
                     {{
                         selector: 'edge',
                         style: {{
-                            'width': 2,
-                            'line-color': '#f2f2f2',
+                            'width': 2.5,
+                            'line-color': '#111827',
+                            'target-arrow-color': '#111827',
                             'target-arrow-shape': 'triangle',
-                            'curve-style': 'bezier'
+                            'curve-style': 'bezier',
+                            'opacity': 0.78
+                        }}
+                    }},
+                    {{
+                        selector: 'edge:selected',
+                        style: {{
+                            'line-color': '#facc15',
+                            'target-arrow-color': '#facc15',
+                            'width': 4,
+                            'opacity': 1
                         }}
                     }}
                 ],
-                layout: {{
-                    name: 'dagre',
-                    rankDir: 'TB',  // Top to Bottom layout
-                    nodeSep: 50,
-                    edgeSep: 20,
-                    rankSep: 75
-                }}
+                layout: graphLayout
             }});
 
             console.log("✅ Graph initialized successfully!");
@@ -194,6 +264,85 @@ def html_cytoscape(elements_json: str):
     </html>
     """
     return html_code
+
+
+def html_embedded_dashboard(host: str, workspace_id: str, dashboard_id: str, token: str, height: int = 700, show_navigation: bool = False):
+    """Generate HTML for embedded GoodData dashboard with token authentication via postMessage."""
+    html_code = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {{
+                margin: 0;
+                padding: 0;
+                overflow: hidden;
+            }}
+            #embedded-dashboard {{
+                width: 100%;
+                height: {height}px;
+                border: none;
+            }}
+        </style>
+    </head>
+    <body>
+        <iframe
+            id="embedded-dashboard"
+            src="{host}dashboards/embedded/#/workspace/{workspace_id}/dashboard/{dashboard_id}?apiTokenAuthentication=true&showNavigation={'true' if show_navigation else 'false'}&setHeight={height}"
+            frameborder="0">
+        </iframe>
+        <script>
+            console.log("Setting up embedded dashboard with token authentication");
+
+            // Function to send postMessage to iframe
+            function sendMessageToIframe(message) {{
+                const iframe = document.getElementById("embedded-dashboard");
+                if (iframe && iframe.contentWindow) {{
+                    const origin = "*";
+                    iframe.contentWindow.postMessage(message, origin);
+                    console.log("Sending message to embedded dashboard", message);
+                }}
+            }}
+
+            // Listen for token request from iframe
+            window.addEventListener("message", function (e) {{
+                // Log all messages for debugging
+                console.log("Post message received", e.data);
+
+                // Normalize event data - handle both formats (with and without gdc wrapper)
+                const eventData = e.data.gdc || e.data;
+                const eventName = eventData?.event?.name || eventData?.name;
+
+                // Handle API token request
+                if (eventName == "listeningForApiToken") {{
+                    const postMessageStructure = {{
+                        gdc: {{
+                            product: "dashboard",
+                            event: {{
+                                name: "setApiToken",
+                                data: {{
+                                    token: "{token}"
+                                }}
+                            }}
+                        }}
+                    }};
+                    sendMessageToIframe(postMessageStructure);
+                    console.log("Token sent to embedded dashboard");
+                }}
+            }}, false);
+        </script>
+    </body>
+    </html>
+    """
+    return html_code
+
+
+def pretty_json(value, fallback=None):
+    data = value if value else fallback
+    return json.dumps(data, indent=2, default=str)
+
 
 def time_it(ref_time: float=0, run: bool = False):
     """
@@ -258,6 +407,170 @@ def get_results(hostname, token, workspace_id, execution_result_id):
         "Authorization": f"Bearer {token}"
     }
     return get(url, headers=headers)
+
+
+def get_filter_contexts(hostname, token, workspace_id):
+    """Fetch filter contexts via REST API (fallback when SDK fails)."""
+    url = f"{hostname}/api/v1/entities/workspaces/{workspace_id}/filterContexts?size=200"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json"
+    }
+    return get(url, headers=headers, timeout=30)
+
+
+def get_ldm_via_rest(hostname, token, workspace_id):
+    """Fetch LDM via REST API (fallback when SDK fails)."""
+    url = f"{hostname}/api/v1/layout/workspaces/{workspace_id}/ldm"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json"
+    }
+    return get(url, headers=headers, timeout=30)
+
+
+def get_pdm_via_rest(hostname, token, workspace_id):
+    """Fetch PDM via REST API (fallback when SDK fails)."""
+    url = f"{hostname}/api/v1/layout/workspaces/{workspace_id}/pdm"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json"
+    }
+    return get(url, headers=headers, timeout=30)
+
+
+def probe_url(url):
+    """Probe if a URL is accessible (for dashboard embedding)."""
+    try:
+        r = get(url, timeout=5)
+        return r.status_code < 400
+    except Exception:
+        return False
+
+
+def process_ldm_rest_response(resp_data: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    """Process LDM REST API response and return (datasets_rows, columns_rows, refs_rows)."""
+    datasets_rows: list[dict] = []
+    columns_rows: list[dict] = []
+    refs_rows: list[dict] = []
+    try:
+        ds_list = (resp_data.get("ldm") or {}).get("datasets", [])
+        for ds in ds_list:
+            ds_id = ds.get("id")
+            ds_title = ds.get("title") or ds.get("name")
+            ds_is_date = any((a or {}).get("granularity") for a in (ds.get("attributes") or []))
+            datasets_rows.append({
+                "dataset_id": ds_id,
+                "dataset_title": ds_title,
+                "description": ds.get("description"),
+                "tags": ds.get("tags"),
+                "dataset_type": "date" if ds_is_date else "regular",
+            })
+            for attr in ds.get("attributes", []) or []:
+                src_col_val = attr.get("source_column")
+                src_table = None
+                if isinstance(src_col_val, dict):
+                    src_table = (src_col_val.get("table") or src_col_val.get("name") or src_col_val.get("dataset"))
+                columns_rows.append({
+                    "dataset_id": ds_id,
+                    "dataset_title": ds_title,
+                    "column_id": attr.get("id"),
+                    "column_title": attr.get("title"),
+                    "column_description": attr.get("description"),
+                    "tags": attr.get("tags"),
+                    "data_type": attr.get("data_type"),
+                    "source_column": attr.get("source_column"),
+                    "source_table": src_table,
+                    "column_type": "attribute",
+                    "granularity": attr.get("granularity"),
+                    "label": attr.get("label"),
+                    "is_anchor": attr.get("is_anchor"),
+                    "default_label": attr.get("default_label"),
+                    "sort_label": attr.get("sort_label"),
+                    "labels": attr.get("labels"),
+                })
+            for fact in ds.get("facts", []) or []:
+                src_col_val = fact.get("source_column")
+                src_table = None
+                if isinstance(src_col_val, dict):
+                    src_table = (src_col_val.get("table") or src_col_val.get("name") or src_col_val.get("dataset"))
+                columns_rows.append({
+                    "dataset_id": ds_id,
+                    "dataset_title": ds_title,
+                    "column_id": fact.get("id"),
+                    "column_title": fact.get("title"),
+                    "column_description": fact.get("description"),
+                    "tags": fact.get("tags"),
+                    "data_type": fact.get("data_type"),
+                    "source_column": fact.get("source_column"),
+                    "source_table": src_table,
+                    "column_type": "fact",
+                    "granularity": None,
+                    "label": None,
+                    "aggregation": fact.get("aggregation"),
+                })
+            for ref in ds.get("references", []) or []:
+                refs_rows.append({
+                    "from_dataset_id": ds_id,
+                    "from_dataset_title": ds_title,
+                    "to_dataset_id": ref.get("dataset") or ref.get("id"),
+                    "columns": ref.get("source_columns") or ref.get("columns"),
+                })
+    except Exception:
+        pass
+    return datasets_rows, columns_rows, refs_rows
+
+
+def process_pdm_rest_response(resp_data: dict) -> dict:
+    """Process PDM REST API response and return table to data source mapping."""
+    table_to_ds = {}
+    try:
+        tables = (resp_data.get("pdm") or {}).get("tables") or []
+        for t in tables:
+            tname = t.get("name") or t.get("id")
+            dsid = t.get("dataSourceId") or t.get("data_source_id")
+            if tname and dsid:
+                key_full = str(tname).lower()
+                key_base = key_full.split(".")[-1]
+                table_to_ds[key_full] = dsid
+                table_to_ds[key_base] = dsid
+    except Exception:
+        pass
+    return table_to_ds
+
+
+def process_filter_contexts_rest_response(resp_data: dict, used_counts: dict = None) -> list[dict]:
+    """Process filter contexts REST API response and return rows."""
+    rows: list[dict] = []
+    used_counts = used_counts or {}
+    try:
+        items = resp_data.get("data") or []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            att = it.get("attributes", {}) if isinstance(it.get("attributes"), dict) else {}
+            fid = it.get("id") or (it.get("identifier") or {}).get("id")
+            title = att.get("title") or att.get("name")
+            desc = att.get("description")
+            tags = att.get("tags")
+            created = att.get("createdAt") or att.get("created_at") or att.get("created")
+            updated = att.get("modifiedAt") or att.get("updated_at") or att.get("updated")
+            definition = att.get("content") or att.get("definition") or {}
+            filters = definition.get("filters") if isinstance(definition.get("filters"), list) else []
+            rows.append({
+                "id": fid,
+                "title": title,
+                "description": desc,
+                "tags": tags,
+                "created_at": created,
+                "modified_at": updated,
+                "filter_count": len(filters) if filters else 0,
+                "definition": definition,
+                "dashboards_using": used_counts.get(str(fid), 0),
+            })
+    except Exception:
+        pass
+    return rows
 
 
 def general_request(host: str, token: str, obj_id: str, req_type: str, ws_id: str) -> None:

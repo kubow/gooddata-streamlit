@@ -1,14 +1,47 @@
 from pathlib import Path
+from collections import Counter
 
 import altair as alt
-import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from pandas import DataFrame, Timestamp, to_datetime
 
 from common import LoadGoodDataSdk
 # from component import mycomponent # React specific component not relevant here
-from helpers import csv_to_ldm_request, html_cytoscape, time_it
+from helpers import (
+    csv_to_ldm_request, html_cytoscape, html_embedded_dashboard, time_it,
+    get_filter_contexts, probe_url,
+    process_filter_contexts_rest_response
+)
+
+
+def _is_empty_analytics(analytics_obj) -> bool:
+    """Check if analytics object is empty (no metrics, visualizations, or dashboards)."""
+    if analytics_obj is None:
+        return True
+    try:
+        return (
+            len(getattr(analytics_obj, "metrics", []) or []) == 0 and
+            len(getattr(analytics_obj, "visualization_objects", []) or []) == 0 and
+            len(getattr(analytics_obj, "analytical_dashboards", []) or []) == 0
+        )
+    except Exception:
+        return True
+
+
+def _extract_datasources(gd_instance) -> list[dict]:
+    """Extract datasources from GoodData SDK instance."""
+    try:
+        ds_list = getattr(gd_instance, "datasources", []) or []
+        return [
+            {
+                "id": getattr(it, "id", None),
+                "name": getattr(it, "name", None) or getattr(it, "title", None) or getattr(it, "id", None),
+            }
+            for it in ds_list
+        ]
+    except Exception:
+        return []
 
 
 def st_folder_selector(st_placeholder, path='.', label='Please, select a folder...'):
@@ -76,10 +109,10 @@ def get_analytics_lists(analytics_obj):
         db = getattr(analytics_obj, "dashboards", [])
     return list(mx or []), list(vz or []), list(db or [])
 
-def build_dashboard_rows(dashboards, ws_id: str, fc_map: dict | None = None) -> list[dict]:
-    base_host = st.secrets.get("GOODDATA_HOST", "").rstrip("/")
-    token = st.secrets.get("GOODDATA_TOKEN", "")
-    hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/json"} if token else None
+def build_dashboard_rows(dashboards, ws_id: str, fc_map: dict | None = None, base_host: str | None = None) -> list[dict]:
+    """Build dashboard rows. If base_host is not provided, gets it from session state gd instance."""
+    if base_host is None:
+        base_host = st.session_state.get("gd")._host if st.session_state.get("gd") else ""
     rows = []
     for d in dashboards or []:
         # base fields
@@ -300,55 +333,6 @@ def build_visual_rows(visuals: list) -> list[dict]:
         rows.append(row)
     return rows
 
-def build_filter_context_rows(ws_id: str, dashes_df: DataFrame | None = None) -> list[dict]:
-    """Fetch filter contexts from REST and build enriched rows.
-    Includes id, title, description, tags, created/modified timestamps, filter count, and usage by dashboards.
-    """
-    host = str(st.secrets.get("GOODDATA_HOST", "")).rstrip("/")
-    token = st.secrets.get("GOODDATA_TOKEN", "")
-    if not host or not token:
-        return []
-    rows: list[dict] = []
-    try:
-        url = f"{host}/api/v1/entities/workspaces/{ws_id}/filterContexts?size=200"
-        resp = requests.get(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}, timeout=30)
-        if resp.status_code == 200:
-            data = resp.json() or {}
-            items = data.get("data") or []
-            # Precompute dashboard usage
-            used_counts = {}
-            if isinstance(dashes_df, DataFrame) and not dashes_df.empty and "filter_context_id" in dashes_df.columns:
-                try:
-                    for v, cnt in dashes_df["filter_context_id"].value_counts().items():
-                        used_counts[str(v)] = int(cnt)
-                except Exception:
-                    used_counts = {}
-            for it in items:
-                if not isinstance(it, dict):
-                    continue
-                att = it.get("attributes", {}) if isinstance(it.get("attributes"), dict) else {}
-                fid = it.get("id") or (it.get("identifier") or {}).get("id")
-                title = att.get("title") or att.get("name")
-                desc = att.get("description")
-                tags = att.get("tags")
-                created = att.get("createdAt") or att.get("created_at") or att.get("created")
-                updated = att.get("modifiedAt") or att.get("updated_at") or att.get("updated")
-                definition = att.get("content") or att.get("definition") or {}
-                filters = definition.get("filters") if isinstance(definition.get("filters"), list) else []
-                rows.append({
-                    "id": fid,
-                    "title": title,
-                    "description": desc,
-                    "tags": tags,
-                    "created_at": created,
-                    "modified_at": updated,
-                    "filter_count": len(filters) if filters else 0,
-                    "definition": definition,
-                    "dashboards_using": used_counts.get(str(fid), 0),
-                })
-    except Exception:
-        return rows
-    return rows
 
 def build_flat_rows(objs: list) -> list[dict]:
     """Flatten each object's structure (including nested 'content') into a single-level dict."""
@@ -491,8 +475,8 @@ def build_filter_context_rows_from_analytics(analytics_obj, dashes_df: DataFrame
 
 def main():
     # session variables
-    if "analytics" not in st.session_state:
-        st.session_state["analytics"] = []
+    #if "analytics" not in st.session_state:  # for backups
+    #    st.session_state["analytics"] = []
     if "gd" not in st.session_state:
         st.session_state["gd"] = LoadGoodDataSdk(st.secrets["GOODDATA_HOST"], st.secrets["GOODDATA_TOKEN"])
     if "timing" not in st.session_state:
@@ -507,6 +491,8 @@ def main():
         layout="wide", page_icon="favicon.ico", page_title="Streamlit-GoodData integration demo"
     )
     org = st.session_state["gd"].organization()
+    # Store organization hostname for use throughout the app
+    org_hostname = org.attributes.hostname if hasattr(org, "attributes") and hasattr(org.attributes, "hostname") else st.session_state["gd"]._host
 
     with st.sidebar:
         # Details first
@@ -527,261 +513,28 @@ def main():
         need_load = refresh_ws or (st.session_state.get("current_ws_id") != ws_id) or (ws_id not in ws_cache)
         if need_load:
             with st.spinner("Loading workspace metadata..."):
-                # Analytics via SDK wrapper
+                # Analytics via high-level call (with retry logic)
+                analytics = None
                 try:
                     analytics = st.session_state["gd"].details(wks_id=ws_id, by="id")
                 except Exception:
                     analytics = None
                     st.warning("Failed to fetch analytics for the selected workspace.")
                 # If analytics object exists but has no expected lists, retry by name
-                try:
-                    empty_analytics = (
-                        analytics is None or (
-                            len(getattr(analytics, "metrics", []) or []) == 0 and
-                            len(getattr(analytics, "visualization_objects", []) or []) == 0 and
-                            len(getattr(analytics, "analytical_dashboards", []) or []) == 0
-                        )
-                    )
-                except Exception:
-                    empty_analytics = True
-                if empty_analytics:
+                if analytics is not None and _is_empty_analytics(analytics):
                     try:
                         analytics = st.session_state["gd"].details(wks_id=ws_name, by="name")
                     except Exception:
                         pass
-                # LDM: SDK-first, REST fallback
-                datasets_rows, columns_rows, refs_rows = [], [], []
-                try:
-                    ldm = st.session_state["gd"]._sdk.catalog_workspace_content.get_declarative_ldm(ws_id)
-                    ds_list = getattr(getattr(ldm, "ldm", None), "datasets", []) or []
-                    for ds in ds_list:
-                        ds_id = getattr(ds, "id", None)
-                        ds_title = getattr(ds, "title", None) or getattr(ds, "name", None)
-                        # Heuristic dataset type detection
-                        try:
-                            _attrs = getattr(ds, "attributes", []) or []
-                            ds_is_date = any(
-                                (getattr(a, "granularity", None) or (getattr(getattr(a, "to_dict", None), "__call__", None)() or {}).get("granularity"))
-                                for a in _attrs
-                            )
-                        except Exception:
-                            ds_is_date = False
-                        datasets_rows.append({
-                            "dataset_id": ds_id,
-                            "dataset_title": ds_title,
-                            "description": getattr(ds, "description", None),
-                            "tags": getattr(ds, "tags", None),
-                            "dataset_type": "date" if ds_is_date else "regular",
-                        })
-                        for attr in getattr(ds, "attributes", []) or []:
-                            cdict = getattr(attr, "to_dict", None)
-                            as_dict = cdict() if callable(cdict) else getattr(attr, "__dict__", {})
-                            src_col_val = as_dict.get("source_column") if isinstance(as_dict, dict) else None
-                            src_table = None
-                            if isinstance(src_col_val, dict):
-                                src_table = src_col_val.get("table") or src_col_val.get("name") or src_col_val.get("dataset")
-                            columns_rows.append({
-                                "dataset_id": ds_id,
-                                "dataset_title": ds_title,
-                                "column_id": getattr(attr, "id", None),
-                                "column_title": getattr(attr, "title", None),
-                                "column_description": getattr(attr, "description", None),
-                                "tags": getattr(attr, "tags", None),
-                                "data_type": as_dict.get("data_type") if isinstance(as_dict, dict) else None,
-                                "source_column": (as_dict.get("source_column") if isinstance(as_dict, dict) else None),
-                                "source_table": src_table,
-                                "column_type": "attribute",
-                                "granularity": as_dict.get("granularity") if isinstance(as_dict, dict) else None,
-                                "label": as_dict.get("label") if isinstance(as_dict, dict) else None,
-                                "is_anchor": as_dict.get("is_anchor") if isinstance(as_dict, dict) else getattr(attr, "is_anchor", None),
-                                "default_label": as_dict.get("default_label") if isinstance(as_dict, dict) else getattr(attr, "default_label", None),
-                                "sort_label": as_dict.get("sort_label") if isinstance(as_dict, dict) else getattr(attr, "sort_label", None),
-                                "labels": as_dict.get("labels") if isinstance(as_dict, dict) else None,
-                            })
-                        for fact in getattr(ds, "facts", []) or []:
-                            cdict = getattr(fact, "to_dict", None)
-                            as_dict = cdict() if callable(cdict) else getattr(fact, "__dict__", {})
-                            src_col_val = as_dict.get("source_column") if isinstance(as_dict, dict) else None
-                            src_table = None
-                            if isinstance(src_col_val, dict):
-                                src_table = (src_col_val.get("table") or src_col_val.get("name") or src_col_val.get("dataset"))
-                            columns_rows.append({
-                                "dataset_id": ds_id,
-                                "dataset_title": ds_title,
-                                "column_id": getattr(fact, "id", None),
-                                "column_title": getattr(fact, "title", None),
-                                "column_description": getattr(fact, "description", None),
-                                "tags": getattr(fact, "tags", None),
-                                "data_type": as_dict.get("data_type") if isinstance(as_dict, dict) else None,
-                                "source_column": (as_dict.get("source_column") if isinstance(as_dict, dict) else None),
-                                "source_table": src_table,
-                                "column_type": "fact",
-                                "granularity": None,
-                                "label": None,
-                                "aggregation": as_dict.get("aggregation") if isinstance(as_dict, dict) else getattr(fact, "aggregation", None),
-                            })
-                        # references (best-effort)
-                        try:
-                            ds_dict = getattr(ds, "to_dict", lambda: {})()
-                            for ref in (ds_dict.get("references") or []):
-                                refs_rows.append({
-                                    "from_dataset_id": ds_id,
-                                    "from_dataset_title": ds_title,
-                                    "to_dataset_id": ref.get("dataset") or ref.get("id"),
-                                    "columns": ref.get("source_columns") or ref.get("columns"),
-                                })
-                        except Exception:
-                            pass
-
-                except Exception:
-                    host = st.secrets.get("GOODDATA_HOST", "").rstrip("/")
-                    token = st.secrets.get("GOODDATA_TOKEN", "")
-                    if host and token:
-                        try:
-                            resp = requests.get(
-                                f"{host}/api/v1/layout/workspaces/{ws_id}/ldm",
-                                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                                timeout=30,
-                            )
-                            if resp.status_code == 200:
-                                data = resp.json() or {}
-                                ds_list = (data.get("ldm") or {}).get("datasets", [])
-                                for ds in ds_list:
-                                    ds_id = ds.get("id")
-                                    ds_title = ds.get("title") or ds.get("name")
-                                    ds_is_date = any((a or {}).get("granularity") for a in (ds.get("attributes") or []))
-                                    datasets_rows.append({
-                                        "dataset_id": ds_id,
-                                        "dataset_title": ds_title,
-                                        "description": ds.get("description"),
-                                        "tags": ds.get("tags"),
-                                        "dataset_type": "date" if ds_is_date else "regular",
-                                    })
-                                    for attr in ds.get("attributes", []) or []:
-                                        src_col_val = attr.get("source_column")
-                                        src_table = None
-                                        if isinstance(src_col_val, dict):
-                                            src_table = (src_col_val.get("table") or src_col_val.get("name") or src_col_val.get("dataset"))
-                                        columns_rows.append({
-                                            "dataset_id": ds_id,
-                                            "dataset_title": ds_title,
-                                            "column_id": attr.get("id"),
-                                            "column_title": attr.get("title"),
-                                            "column_description": attr.get("description"),
-                                            "tags": attr.get("tags"),
-                                            "data_type": attr.get("data_type"),
-                                            "source_column": attr.get("source_column"),
-                                            "source_table": src_table,
-                                            "column_type": "attribute",
-                                            "granularity": attr.get("granularity"),
-                                            "label": attr.get("label"),
-                                            "is_anchor": attr.get("is_anchor"),
-                                            "default_label": attr.get("default_label"),
-                                            "sort_label": attr.get("sort_label"),
-                                            "labels": attr.get("labels"),
-                                        })
-                                    for fact in ds.get("facts", []) or []:
-                                        src_col_val = fact.get("source_column")
-                                        src_table = None
-                                        if isinstance(src_col_val, dict):
-                                            src_table = (src_col_val.get("table") or src_col_val.get("name") or src_col_val.get("dataset"))
-                                        columns_rows.append({
-                                            "dataset_id": ds_id,
-                                            "dataset_title": ds_title,
-                                            "column_id": fact.get("id"),
-                                            "column_title": fact.get("title"),
-                                            "column_description": fact.get("description"),
-                                            "tags": fact.get("tags"),
-                                            "data_type": fact.get("data_type"),
-                                            "source_column": fact.get("source_column"),
-                                            "source_table": src_table,
-                                            "column_type": "fact",
-                                            "granularity": None,
-                                            "label": None,
-                                            "aggregation": fact.get("aggregation"),
-                                        })
-                                    for ref in ds.get("references", []) or []:
-                                        refs_rows.append({
-                                            "from_dataset_id": ds_id,
-                                            "from_dataset_title": ds_title,
-                                            "to_dataset_id": ref.get("dataset") or ref.get("id"),
-                                            "columns": ref.get("source_columns") or ref.get("columns"),
-                                        })
-                        except Exception:
-                            pass
+                
+                # LDM via high-level call (SDK-first, API fallback handled internally)
+                datasets_rows, columns_rows, refs_rows = st.session_state["gd"].load_ldm(ws_id)
 
                 # Ensure workspace-bound data sources are available for mapping and cache
-                workspace_datasources: list[dict] = []
-                try:
-                    ds_list = getattr(st.session_state.get("gd"), "datasources", []) or []
-                    for it in ds_list:
-                        workspace_datasources.append({
-                            "id": getattr(it, "id", None),
-                            "name": getattr(it, "name", None) or getattr(it, "title", None) or getattr(it, "id", None),
-                        })
-                except Exception:
-                    workspace_datasources = []
+                workspace_datasources = _extract_datasources(st.session_state.get("gd"))
                 # Attempt to enrich LDM columns with data source via PDM table mapping (best-effort)
-                table_to_ds = {}
-                try:
-                    # SDK PDM first
-                    pdm = st.session_state["gd"]._sdk.catalog_workspace_content.get_declarative_pdm(ws_id)
-                    # Try to read tables and their data source ids
-                    pdm_dict = getattr(pdm, "to_dict", lambda: {})()
-                    # Heuristic traversal
-                    tables = []
-                    if isinstance(pdm_dict, dict):
-                        # Find any list of tables with dataSourceId and name/id
-                        def _walk(obj):
-                            out = []
-                            if isinstance(obj, dict):
-                                for k, v in obj.items():
-                                    out.extend(_walk(v))
-                            elif isinstance(obj, list):
-                                for it in obj:
-                                    out.extend(_walk(it))
-                            else:
-                                return []
-                            return out
-                        # naive extract
-                        # fallback to SDK attributes
-                        tables = pdm_dict.get("tables") or _walk(pdm_dict)
-                    # Build name->ds map
-                    if isinstance(tables, list):
-                        for t in tables:
-                            if isinstance(t, dict):
-                                tname = t.get("name") or t.get("id")
-                                dsid = t.get("dataSourceId") or t.get("data_source_id")
-                                if tname and dsid:
-                                    key_full = str(tname).lower()
-                                    key_base = key_full.split(".")[-1]
-                                    table_to_ds[key_full] = dsid
-                                    table_to_ds[key_base] = dsid
-                except Exception:
-                    # REST fallback
-                    host = st.secrets.get("GOODDATA_HOST", "").rstrip("/")
-                    token = st.secrets.get("GOODDATA_TOKEN", "")
-                    if host and token:
-                        try:
-                            resp = requests.get(
-                                f"{host}/api/v1/layout/workspaces/{ws_id}/pdm",
-                                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
-                                timeout=30,
-                            )
-                            if resp.status_code == 200:
-                                data = resp.json() or {}
-                                # Heuristic: expect pdm.tables with name and dataSourceId
-                                tables = (data.get("pdm") or {}).get("tables") or []
-                                for t in tables:
-                                    tname = t.get("name") or t.get("id")
-                                    dsid = t.get("dataSourceId") or t.get("data_source_id")
-                                    if tname and dsid:
-                                        key_full = str(tname).lower()
-                                        key_base = key_full.split(".")[-1]
-                                        table_to_ds[key_full] = dsid
-                                        table_to_ds[key_base] = dsid
-                        except Exception:
-                            pass
+                # High-level call (SDK-first, API fallback handled internally)
+                table_to_ds = st.session_state["gd"].load_pdm_mapping(ws_id)
 
                 # If we have any table->DS mapping, annotate columns_rows and datasets_rows summaries
                 if table_to_ds and columns_rows:
@@ -809,7 +562,6 @@ def main():
                                 col["data_source_id"] = dsid
                                 col["data_source_name"] = dsid_to_name.get(str(dsid))
                     # Aggregate to dataset level (majority data source among its columns)
-                    from collections import Counter
                     ds_majority = {}
                     for ds in datasets_rows:
                         dsid = ds.get("dataset_id")
@@ -873,17 +625,13 @@ def main():
                 disabled=not bool(viz_options),
             )
             # Datasources from SDK wrapper (already available in st.session_state["gd"].datasources)
-            try:
-                ds_bound = [{"id": getattr(d, "id", None), "name": (getattr(d, "name", None) or getattr(d, "title", None) or getattr(d, "id", None))} for d in (st.session_state.get("gd").datasources or [])]
-            except Exception:
-                ds_bound = []
+            ds_bound = _extract_datasources(st.session_state.get("gd"))
             ds_options = [d.get("name") for d in ds_bound] if ds_bound else []
             # Try to derive assigned data source from cached LDM datasets majority mapping
             assigned_ds = None
             try:
                 ds_df_cached = cache_entry.get("ldm_ds_df")
                 if ds_df_cached is not None and not ds_df_cached.empty and "data_source_id" in ds_df_cached.columns:
-                    from collections import Counter
                     votes = Counter([str(x) for x in ds_df_cached["data_source_id"].dropna().astype(str).tolist()])
                     if votes:
                         top_id, _ = votes.most_common(1)[0]
@@ -1216,27 +964,32 @@ def main():
                             embed_url = row_match.iloc[0]["embed_url"]
                             embed_url_alt = row_match.iloc[0].get("embed_url_alt")
                         if not embed_url:
-                            host = str(st.secrets.get("GOODDATA_HOST", "")).rstrip("/")
+                            # Use organization hostname (preferred) or fallback to gd instance host
+                            host = org_hostname
                             embed_url = f"{host}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{clicked_dash_id}?showNavigation=false&setHeight=700"
                             embed_url_alt = f"{host}/embedded/dashboards/#/workspace/{active_ws.id}/dashboard/{clicked_dash_id}?showNavigation=false&setHeight=700"
-                        # Probe URLs to auto-select a working variant
-                        def _is_ok(url: str | None) -> bool:
-                            if not url:
-                                return False
-                            try:
-                                r = requests.get(url, timeout=5)
-                                return r.status_code < 400
-                            except Exception:
-                                return False
-                        if _is_ok(embed_url):
+                        # Probe URLs to auto-select a working variant (via helpers.py)
+                        if probe_url(embed_url):
                             url_to_use = embed_url
-                        elif _is_ok(embed_url_alt):
+                            use_token_embed = True
+                        elif probe_url(embed_url_alt):
                             url_to_use = embed_url_alt
+                            use_token_embed = False
                         else:
                             # If both probes fail, still try default to allow cookie-auth flows
                             url_to_use = embed_url or embed_url_alt
+                            use_token_embed = bool(embed_url)
                         st.caption(f"Embedding: {url_to_use}")
-                        components.iframe(url_to_use, 1000, 700)
+                        if use_token_embed:
+                            # Preferred path: push the API token into the iframe via postMessage
+                            # instead of relying on an existing cookie session.
+                            gd_token = getattr(st.session_state["gd"], "_token", "")
+                            components.html(
+                                html_embedded_dashboard(f"{org_hostname}/", active_ws.id, clicked_dash_id, gd_token, height=700),
+                                height=700,
+                            )
+                        else:
+                            components.iframe(url_to_use, 1000, 700)
                         st.write(f"dashboard loaded in {time_it(t, True)*1000} milliseconds")
                     except Exception as _e:
                         st.error(f"Failed to embed dashboard: {_e}")
