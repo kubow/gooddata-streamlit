@@ -1,0 +1,27 @@
+helpers.py
+  s_267dc4e1380e97::t_26bdfb9b0698f5 3,19,22-29,33-39,44-52,54-58,74-77,81-117,119,130-132,134-152,158-159,165-166,172-173,179-182,188-198,204-206,208-218,222,268-345
+  s_267dc4e1380e97::t_03d0a5423a9819 346
+  s_267dc4e1380e97::t_dba0cfdffa20a5 412-575
+app.py
+  s_267dc4e1380e97::t_7338ab84f61a92 974-975,977,981,983-992
+  s_267dc4e1380e97::t_6fb898d32b2624 12
+  s_267dc4e1380e97::t_34b6ea38fc703d 11
+  s_267dc4e1380e97::t_17ae0e254f449c 13-15
+  s_267dc4e1380e97::t_c917ee7fc90845 2,16-44,112-115,478-479,494-495,516-517,524,529-531,534,536-537,628,967-968,971-972
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "78e4d18af5cb583be8da7c95a00fe32fb1299dff",
+  "prompts": {},
+  "sessions": {
+    "s_267dc4e1380e97": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c10365f7-7c9c-454c-9ad4-71fb4bcf2eca",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "kubow <kube.kubow@gmail.com>"
+    }
+  }
+}
