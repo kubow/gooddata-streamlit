@@ -1,106 +1,53 @@
 <!DOCTYPE html>
 <html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GoodData.UI Dashboard Component</title>
+    <style>
+        html, body, gd-dashboard-embed {
+            margin: 0;
+            width: 100%;
+            min-height: 700px;
+        }
+    </style>
+</head>
 <body>
-    <pre id="embedded-description"></pre>
-    <input id="myinput" value="" />
-    <iframe 
-        title="Analytics Designer"
-        id="embedded-content"
-        src="https://demos.cloud.gooddata.com/analyze/embedded/#/ecommerce-parent-dev/09a05f3f-d0cd-423a-8844-eba4ba7ca0c4/edit"
-        height="700px" 
-        width="100%" 
-    ></iframe>
+    <gd-dashboard-embed id="dashboard" readonly></gd-dashboard-embed>
     <script>
-        console.log("#PARENT: Setup parent message listener");
-        
         function sendMessageToStreamlitClient(type, data) {
-        var outData = Object.assign({
-          isStreamlitMessage: true,
-          type: type,
-        }, data);
-        window.parent.postMessage(outData, "*");
+            window.parent.postMessage(Object.assign({
+                isStreamlitMessage: true,
+                type: type,
+            }, data), "*");
         }
 
         function init() {
             sendMessageToStreamlitClient("streamlit:componentReady", {apiVersion: 1});
         }
 
-        function setFrameHeight(height) {
-            sendMessageToStreamlitClient("streamlit:setFrameHeight", {height: height});
+        function renderDashboard(args) {
+            if (!args || !args.script_url || !args.dashboard_id) return;
+            const script = document.createElement("script");
+            script.type = "module";
+            script.src = args.script_url;
+            document.head.appendChild(script);
+
+            const dashboard = document.getElementById("dashboard");
+            dashboard.setAttribute("dashboard", args.dashboard_id);
+            if (args.workspace_id) dashboard.setAttribute("workspace", args.workspace_id);
         }
 
-        // The `data` argument can be any JSON-serializable value.
-        function sendDataToPython(data) {
-            sendMessageToStreamlitClient("streamlit:setComponentValue", data);
-        }
-
-        // ----------------------------------------------------
-        // Now modify this part of the code to fit your needs:
-
-        var myInput = document.getElementById("myinput");
-
-        // data is any JSON-serializable value you sent from Python,
-        // and it's already deserialized for you.
-        function onDataFromPython(event) {
-            if (event.data.type !== "streamlit:render") return;
-            myInput.value = event.data.args.my_input_value;  // Access values sent from Python here!
-        }
-
-        myInput.addEventListener("change", function() {
-            sendDataToPython({
-            value: myInput.value,
-            dataType: "json",
-            });
-        })
-
-        // Hook things up!
-        window.addEventListener("message", onDataFromPython);
-        init();
-
-        // Hack to autoset the iframe height.
-        window.addEventListener("load", function() {
-            window.setTimeout(function() {
-            setFrameHeight(document.documentElement.clientHeight)
-            }, 0);
+        window.addEventListener("message", function(event) {
+            if (event.data.type === "streamlit:render") {
+                renderDashboard(event.data.args);
+            }
         });
 
-        // Optionally, if the automatic height computation fails you, give this component a height manually
-        // by commenting out below:
-        //setFrameHeight(200);
-
-        //?apiTokenAuthentication=true                 needs to be added
-
-        /* window.addEventListener(
-            "message",
-            function (e) {
-                console.log("#PARENT: Post message received", e.data.gdc.event)
-                if (e.data.gdc.event.name == "listeningForApiToken"){
-                    const postMessageStructure = {
-                        gdc: {
-                            product: "dashboard",
-                            event: {
-                                name: "setApiToken",
-                                data: {
-                                    token: ""
-                                }
-                            }
-                        }
-                    };
-                    console.log("#PARENT: Sending token to embedded window", postMessageStructure);
-                    
-                    const origin = "*";
-                    const iframe = document.getElementById("embedded-content").contentWindow;
-                    iframe.postMessage(postMessageStructure, origin);
-                }
-            },
-            false
-        ); */
-
-        window.onload = function() {
-            const iframe = document.getElementById("embedded-content");
-            const pre = document.getElementById("embedded-description");
-            pre.innerHTML = iframe.src;
-        };
+        init();
+        window.addEventListener("load", function() {
+            sendMessageToStreamlitClient("streamlit:setFrameHeight", {height: 700});
+        });
     </script>
 </body>
 </html>
