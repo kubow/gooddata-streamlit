@@ -1,0 +1,14 @@
+.streamlit/secrets.toml
+  h_0907ec034f4a17 2-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e4af4f8139212d6cdb8f2da3683315338782f425",
+  "prompts": {},
+  "humans": {
+    "h_0907ec034f4a17": {
+      "author": "kubow <kube.kubow@gmail.com>"
+    }
+  }
+}
