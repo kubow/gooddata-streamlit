@@ -1,0 +1,24 @@
+component/index.html
+  s_8c1fc73862dfd3::t_18d7b92ea950c5 3-14,16,19-22,29-34,36-38,41-45,49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "57feed8cd4e0a5aa90298f87e7d81ba3109562f7",
+  "prompts": {},
+  "humans": {
+    "h_0907ec034f4a17": {
+      "author": "kubow <kube.kubow@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_8c1fc73862dfd3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0e270-96a9-73a0-a574-ddd039433b3d",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "kubow <kube.kubow@gmail.com>"
+    }
+  }
+}
