@@ -1,0 +1,24 @@
+requirements.txt
+  s_267dc4e1380e97::t_744188277ca8bf 2,5,7,9-14,23,25,27,31,33,35,39,44,50,52,54-56,58,64-75,81,85,89,93,95,104,110,117,121,123,125,129-133,135,137,149,151-153,167,171,179,181-183,185,187,193,196-198,200-203,205,209-212,215-217
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "a252677e8dbd18055a85663753ff3b631de29b72",
+  "prompts": {},
+  "humans": {
+    "h_0907ec034f4a17": {
+      "author": "kubow <kube.kubow@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_267dc4e1380e97": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c10365f7-7c9c-454c-9ad4-71fb4bcf2eca",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "kubow <kube.kubow@gmail.com>"
+    }
+  }
+}
