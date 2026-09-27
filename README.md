@@ -39,9 +39,11 @@ The first step is to fork the repository or download it and publish to your own 
 
    - see [Streamlit secrets management](https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management) for the hosting UI
 
-For local development, create `.streamlit/secrets.toml` with the same keys. The
-`.streamlit/*.toml` rule in `.gitignore` keeps local secrets and Streamlit
-configuration out of the public repository.
+For local development, copy `.streamlit/secrets.toml.example` to
+`.streamlit/secrets.toml` and replace the placeholder values. The
+`.streamlit/secrets*.toml` rule in `.gitignore` keeps local secrets out of the
+public repository. Non-secret Streamlit configuration such as
+`.streamlit/config.toml` can remain committed.
 
 ## TO-DO
 

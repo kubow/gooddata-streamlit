@@ -130,3 +130,7 @@ dmypy.json
 .pyre/
 
 gooddata_layouts/*
+
+# Streamlit secrets. Configure these in Streamlit Community Cloud's
+# Secrets settings for public repository deployments.
+.streamlit/secrets*.toml
