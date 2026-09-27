@@ -1,1108 +1,1480 @@
-from pathlib import Path
-from collections import Counter
+from sys import path  # extra step because
+path.append('../')  # importing GoodData SDK from root directory
+
+from common import LoadGoodDataSdk, csv_to_sql
+# from component import mycomponent # React specific component not relevant here
+from helpers import csv_to_ldm_request, html_cytoscape, html_gooddata_ui_dashboard, time_it, restore_from_url, load_restore_profiles, save_restore_profiles, load_users_internal, load_users_testing, load_users_testing_template, save_users_testing, automation_rows, notification_channel_rows, pretty_json, workspace_overview_stats, dashboard_effective_filter_stats, dashboard_filter_context_records, load_plugin_list, save_plugin_list, discover_plugins_from_s3, list_workspace_plugins, register_plugin_with_workspace, write_plugin_yaml_helper
+from datetime import datetime
 
 import altair as alt
+from pathlib import Path
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from pandas import DataFrame, Timestamp, to_datetime
-
-from common import LoadGoodDataSdk
-# from component import mycomponent # React specific component not relevant here
-from helpers import (
-    csv_to_ldm_request, html_cytoscape, html_embedded_dashboard, time_it,
-    get_filter_contexts, probe_url,
-    process_filter_contexts_rest_response
-)
 
 
-def _is_empty_analytics(analytics_obj) -> bool:
-    """Check if analytics object is empty (no metrics, visualizations, or dashboards)."""
-    if analytics_obj is None:
-        return True
-    try:
-        return (
-            len(getattr(analytics_obj, "metrics", []) or []) == 0 and
-            len(getattr(analytics_obj, "visualization_objects", []) or []) == 0 and
-            len(getattr(analytics_obj, "analytical_dashboards", []) or []) == 0
-        )
-    except Exception:
-        return True
+def get_workspace_automations(gd, workspace_id):
+    """Return {schedules, alerts} for the given workspace."""
+    if hasattr(gd, "get_workspace_automations"):
+        return gd.get_workspace_automations(workspace_id=workspace_id)
+    return gd.get_user_automations("")
 
 
-def _extract_datasources(gd_instance) -> list[dict]:
-    """Extract datasources from GoodData SDK instance."""
-    try:
-        ds_list = getattr(gd_instance, "datasources", []) or []
-        return [
-            {
-                "id": getattr(it, "id", None),
-                "name": getattr(it, "name", None) or getattr(it, "title", None) or getattr(it, "id", None),
-            }
-            for it in ds_list
-        ]
-    except Exception:
-        return []
+def render_workspace_automation_sections(gd, workspace_id, context_label=""):
+    label_suffix = f" ({context_label})" if context_label else ""
+    automations = get_workspace_automations(gd, workspace_id)
+    schedules = automations.get("schedules", [])
+    alerts = automations.get("alerts", [])
 
-
-def st_folder_selector(st_placeholder, path='.', label='Please, select a folder...'):
-    # get base path (directory)
-    base_path = '.' if path is None or path == '' else path
-    base_path = Path(str(path)).resolve()
-    base_path = base_path if base_path.is_dir() else base_path.parent
-
-    # list files in base path directory
-    files = [p.name for p in base_path.iterdir()]
-    if base_path != '.':
-        files.insert(0, '..')
-    files.insert(0, '.')
-
-    selected_file = st_placeholder.selectbox(label=label, options=files, key=str(base_path))
-    selected_path = base_path / selected_file
-
-    if selected_file == '.':
-        return selected_path
-    if selected_path.is_dir():
-        selected_path = st_folder_selector(st_placeholder=st_placeholder,
-                                           path=selected_path, label=label)
-
-    return str(selected_path)
-
-
-def safe_rows(objs):
-    rows = []
-    for o in objs or []:
-        row = {
-            "id": getattr(o, "id", None) or getattr(getattr(o, "identifier", None), "id", None),
-            "title": getattr(o, "title", None) or getattr(o, "name", None),
-            "tags": None,
-        }
-        content = getattr(o, "content", None)
-        if isinstance(content, dict):
-            tags = content.get("tags")
-            if row["title"] is None:
-                row["title"] = content.get("title") or content.get("name")
-        else:
-            tags = getattr(o, "tags", None)
-            if row["title"] is None:
-                row["title"] = getattr(o, "title", None) or getattr(o, "name", None)
-        row["tags"] = tags
-        rows.append(row)
-    return rows
-
-def get_analytics_lists(analytics_obj):
-    """Return (metrics, visualizations, dashboards) supporting multiple attribute names."""
-    if not analytics_obj:
-        return [], [], []
-    # metrics can be under metrics or measures
-    mx = getattr(analytics_obj, "metrics", None)
-    if mx is None:
-        mx = getattr(analytics_obj, "measures", [])
-    # visualizations may be visualization_objects or visualizations or insights
-    vz = getattr(analytics_obj, "visualization_objects", None)
-    if vz is None:
-        vz = getattr(analytics_obj, "visualizations", None)
-    if vz is None:
-        vz = getattr(analytics_obj, "insights", [])
-    # dashboards may be analytical_dashboards or dashboards
-    db = getattr(analytics_obj, "analytical_dashboards", None)
-    if db is None:
-        db = getattr(analytics_obj, "dashboards", [])
-    return list(mx or []), list(vz or []), list(db or [])
-
-def build_dashboard_rows(dashboards, ws_id: str, fc_map: dict | None = None, base_host: str | None = None) -> list[dict]:
-    """Build dashboard rows. If base_host is not provided, gets it from session state gd instance."""
-    if base_host is None:
-        base_host = st.session_state.get("gd")._host if st.session_state.get("gd") else ""
-    rows = []
-    for d in dashboards or []:
-        # base fields
-        row = {
-            "id": getattr(d, "id", None),
-            "title": getattr(d, "title", None),
-            "description": getattr(d, "description", None),
-            "is_hidden": None,
-            "is_valid": None,
-            "created_at": getattr(d, "created_at", None) or getattr(d, "created", None),
-            "modified_at": getattr(d, "updated_at", None) or getattr(d, "updated", None),
-            "filter_context_id": None,
-            "filter_context_definition": None,
-            # enriched FC fields (computed best-effort)
-            "filter_count": None,
-            "attribute_filter_count": None,
-            "date_filter_count": None,
-            "tags": getattr(d, "tags", None),
-        }
-        content = getattr(d, "content", None)
-        if isinstance(content, dict):
-            row["description"] = row["description"] or content.get("description")
-            # GoodData analytical dashboard often has filterContext or filterContextRef
-            fc = content.get("filterContext") or content.get("filterContextRef") or content.get("filter_context")
-            if isinstance(fc, dict):
-                # try common shapes for id
-                row["filter_context_id"] = (
-                        fc.get("id")
-                        or (fc.get("identifier") or {}).get("id")
-                        or (fc.get("ref") or {}).get("id")
-                )
-                # if definition is embedded, keep it
-                if fc.get("filters") or isinstance(fc.get("definition"), dict) or isinstance(fc.get("content"), dict):
-                    row["filter_context_definition"] = (
-                        fc.get("definition")
-                        or fc.get("content")
-                        or {"filters": fc.get("filters")}
+    st.subheader(f"📅 Schedules{label_suffix}")
+    if schedules:
+            st.dataframe(
+                pd.DataFrame(
+                    automation_rows(
+                        schedules,
+                        table_kind="schedule",
+                        include_filter_context=bool(context_label),
                     )
-            # visibility/validity flags if present
-            row["is_hidden"] = content.get("isHidden", row["is_hidden"])
-            row["is_valid"] = content.get("isValid", row["is_valid"])
-            # prefer tags from content if present
-            row["tags"] = content.get("tags", row["tags"])
-        # Inject definition from provided map (no REST)
-        if (row["filter_context_definition"] is None) and row["filter_context_id"] and isinstance(fc_map, dict):
-            try:
-                row["filter_context_definition"] = fc_map.get(str(row["filter_context_id"]))
-            except Exception:
-                pass
-
-        # Compute best-effort counts from the resolved definition (if any)
-        try:
-            fc_def = row.get("filter_context_definition")
-            filt_list = []
-            if isinstance(fc_def, dict):
-                if isinstance(fc_def.get("filters"), list):
-                    filt_list = fc_def.get("filters")
-                elif isinstance(fc_def.get("filterContext"), dict) and isinstance(fc_def.get("filterContext").get("filters"), list):
-                    filt_list = fc_def.get("filterContext").get("filters")
-            row["filter_count"] = len(filt_list) if isinstance(filt_list, list) else row.get("filter_count")
-            # attribute/date breakdown if possible
-            if isinstance(filt_list, list) and filt_list:
-                a_cnt = 0; d_cnt = 0
-                for f in filt_list:
-                    if not isinstance(f, dict):
-                        continue
-                    if f.get("attributeFilter") or f.get("attribute_filter"):
-                        a_cnt += 1
-                    elif f.get("dateFilter") or f.get("date_filter"):
-                        d_cnt += 1
-                row["attribute_filter_count"] = a_cnt
-                row["date_filter_count"] = d_cnt
-        except Exception:
-            pass
-
-        # Construct links
-        if base_host and row["id"]:
-            # Two known variants depending on deployment
-            embed_url_v1 = f"{base_host}/dashboards/embedded/#/workspace/{ws_id}/dashboard/{row['id']}?showNavigation=false&setHeight=700"
-            embed_url_v2 = f"{base_host}/embedded/dashboards/#/workspace/{ws_id}/dashboard/{row['id']}?showNavigation=false&setHeight=700"
-            app_url = f"{base_host}/dashboards/#/workspace/{ws_id}/dashboard/{row['id']}"
-            row["embed_url"] = embed_url_v1
-            row["embed_url_alt"] = embed_url_v2
-            row["app_url"] = app_url
-
-        rows.append(row)
-    return rows
-
-def build_metric_rows(metrics: list) -> list[dict]:
-    """Build enriched rows for metrics including description, MAQL, format, and timestamps.
-    Accepts SDK metric objects or dict-like items.
-    """
-    rows: list[dict] = []
-    for m in metrics or []:
-        # Base fields
-        row = {
-            "id": getattr(m, "id", None) or getattr(getattr(m, "identifier", None), "id", None),
-            "title": getattr(m, "title", None) or getattr(m, "name", None),
-            "description": getattr(m, "description", None),
-            "maql": None,
-            "format": None,
-            "created_at": getattr(m, "created_at", None) or getattr(m, "created", None),
-            "modified_at": getattr(m, "updated_at", None) or getattr(m, "updated", None),
-            "tags": None,
-        }
-        content = getattr(m, "content", None)
-        if isinstance(content, dict):
-            row["description"] = row["description"] or content.get("description")
-            # MAQL might be under 'maql' or nested under 'metric'
-            row["maql"] = content.get("maql") or (content.get("metric", {}) if isinstance(content.get("metric"), dict) else {}).get("maql")
-            # Format may be 'format' or 'content'->'format'
-            row["format"] = content.get("format")
-            # Prefer tags from content
-            row["tags"] = content.get("tags")
-            # Timestamps sometimes live in attributes
-            attrs = content.get("attributes") if isinstance(content.get("attributes"), dict) else None
-            if attrs:
-                row["created_at"] = row["created_at"] or attrs.get("created", attrs.get("created_at"))
-                row["modified_at"] = row["modified_at"] or attrs.get("updated", attrs.get("updated_at"))
-        else:
-            # Fallback to direct attributes on the object
-            row["maql"] = getattr(m, "maql", None)
-            row["format"] = getattr(m, "format", None)
-            row["tags"] = getattr(m, "tags", None)
-        # Final fallback: if title missing, look into dict conversion
-        if row["title"] is None:
-            try:
-                as_dict = m.to_dict() if hasattr(m, "to_dict") else getattr(m, "__dict__", {})
-                if isinstance(as_dict, dict):
-                    row["title"] = row["title"] or as_dict.get("title") or as_dict.get("name")
-                    c = as_dict.get("content")
-                    if isinstance(c, dict):
-                        row["maql"] = row["maql"] or c.get("maql")
-                        row["format"] = row["format"] or c.get("format")
-                        row["description"] = row["description"] or c.get("description")
-                        row["tags"] = row["tags"] or c.get("tags")
-            except Exception:
-                pass
-        rows.append(row)
-    return rows
-
-def build_visual_rows(visuals: list) -> list[dict]:
-    """Build enriched rows for visualizations/insights with description, timestamps, type, and tags.
-    Accepts SDK insight objects or dict-like items.
-    """
-    rows: list[dict] = []
-    for v in visuals or []:
-        row = {
-            "id": getattr(v, "id", None) or getattr(getattr(v, "identifier", None), "id", None),
-            "title": getattr(v, "title", None) or getattr(v, "name", None),
-            "description": getattr(v, "description", None),
-            "type": None,
-            "created_at": getattr(v, "created_at", None) or getattr(v, "created", None),
-            "modified_at": getattr(v, "updated_at", None) or getattr(v, "updated", None),
-            "tags": None,
-            "bucket_count": None,
-            "measures_count": None,
-            "attributes_count": None,
-            "has_filters": None,
-            "sorts_count": None,
-            "measures": None,
-            "attributes": None,
-        }
-        content = getattr(v, "content", None)
-        if isinstance(content, dict):
-            row["description"] = row["description"] or content.get("description")
-            row["tags"] = content.get("tags", row["tags"])
-            # common locations for type
-            row["type"] = content.get("type") or content.get("visualizationUrl") or content.get("visualization_url")
-            # timestamps sometimes live nested
-            attrs = content.get("attributes") if isinstance(content.get("attributes"), dict) else None
-            if attrs:
-                row["created_at"] = row["created_at"] or attrs.get("created", attrs.get("created_at"))
-                row["modified_at"] = row["modified_at"] or attrs.get("updated", attrs.get("updated_at"))
-            # buckets/filters/sorts summaries (GoodData insight content)
-            buckets = content.get("buckets") if isinstance(content.get("buckets"), list) else []
-            row["bucket_count"] = len(buckets) if buckets else 0
-            measures, attributes = [], []
-            try:
-                for b in buckets or []:
-                    items = b.get("items", []) if isinstance(b, dict) else []
-                    for it in items:
-                        local_id = it.get("localIdentifier") or it.get("local_identifier")
-                        # two common item types: measure/attribute with nested measure/attribute ref
-                        m = (it.get("measure") or {}) if isinstance(it.get("measure"), dict) else None
-                        a = (it.get("attribute") or {}) if isinstance(it.get("attribute"), dict) else None
-                        if m:
-                            mid = (m.get("definition") or {}).get("measureDefinition", {}).get("item", {}).get("identifier")
-                            measures.append(mid or local_id)
-                        if a:
-                            aid = (a.get("displayForm") or {}).get("identifier") or (a.get("display_form") or {}).get("identifier")
-                            attributes.append(aid or local_id)
-            except Exception:
-                pass
-            row["measures_count"] = len([x for x in measures if x]) if buckets else 0
-            row["attributes_count"] = len([x for x in attributes if x]) if buckets else 0
-            row["measures"] = ", ".join([str(x) for x in measures if x]) if measures else None
-            row["attributes"] = ", ".join([str(x) for x in attributes if x]) if attributes else None
-            # filters and sorts
-            flt = content.get("filters") if isinstance(content.get("filters"), list) else []
-            srt = content.get("sorts") if isinstance(content.get("sorts"), list) else []
-            row["has_filters"] = bool(flt)
-            row["sorts_count"] = len(srt) if srt else 0
-        else:
-            row["tags"] = getattr(v, "tags", None)
-        if row["title"] is None:
-            try:
-                as_dict = v.to_dict() if hasattr(v, "to_dict") else getattr(v, "__dict__", {})
-                if isinstance(as_dict, dict):
-                    row["title"] = row["title"] or as_dict.get("title") or as_dict.get("name")
-                    c = as_dict.get("content")
-                    if isinstance(c, dict):
-                        row["description"] = row["description"] or c.get("description")
-                        row["tags"] = row["tags"] or c.get("tags")
-                        row["type"] = row["type"] or c.get("type") or c.get("visualizationUrl") or c.get("visualization_url")
-            except Exception:
-                pass
-        rows.append(row)
-    return rows
-
-
-def build_flat_rows(objs: list) -> list[dict]:
-    """Flatten each object's structure (including nested 'content') into a single-level dict."""
-    rows = []
-    for o in objs or []:
-        base = _to_plain_dict(o) or {}
-        # Some SDK objects keep payload under 'content'
-        if isinstance(base.get("content"), dict):
-            flat = _flatten_dict(base)
-        else:
-            flat = _flatten_dict(base)
-        rows.append(flat)
-    return rows
-
-
-def _to_plain_dict(obj) -> dict | None:
-    """Best-effort conversion of an SDK object to a plain dict."""
-    if obj is None:
-        return None
-    if isinstance(obj, dict):
-        return obj
-    if hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict")):
-        try:
-            return obj.to_dict()
-        except Exception:
-            pass
-    try:
-        return dict(getattr(obj, "__dict__", {}))
-    except Exception:
-        return None
-
-
-def _flatten_dict(d: dict, parent_key: str = "", sep: str = ".") -> dict:
-    """Recursively flattens a dict. Lists become indexed with [i] in the path."""
-    items = {}
-    if not isinstance(d, dict):
-        return {parent_key or "value": d}
-    for k, v in d.items():
-        new_key = f"{parent_key}{sep}{k}" if parent_key else str(k)
-        if isinstance(v, dict):
-            items.update(_flatten_dict(v, new_key, sep))
-        elif isinstance(v, list):
-            for i, el in enumerate(v):
-                if isinstance(el, (dict, list)):
-                    items.update(_flatten_dict(el if isinstance(el, dict) else {"_list": el}, f"{new_key}[{i}]", sep))
-                else:
-                    items[f"{new_key}[{i}]"] = el
-        else:
-            items[new_key] = v
-    return items
-
-
-def build_filter_context_rows_from_analytics(analytics_obj, dashes_df: DataFrame | None = None) -> tuple[list[dict], dict]:
-    """Extract filter contexts directly from the analytics object.
-    Returns a tuple: (rows, fc_map) where fc_map maps filter context id -> definition dict.
-    """
-    rows: list[dict] = []
-    fc_map: dict = {}
-    # Dashboard usage counts if provided
-    used_counts = {}
-    if isinstance(dashes_df, DataFrame) and not dashes_df.empty and "filter_context_id" in dashes_df.columns:
-        try:
-            for v, cnt in dashes_df["filter_context_id"].value_counts().items():
-                used_counts[str(v)] = int(cnt)
-        except Exception:
-            used_counts = {}
-    # Try to read filter contexts from analytics as dict
-    try:
-        a_dict = _to_plain_dict(analytics_obj) or {}
-        fcs = (
-            a_dict.get("filter_contexts")
-            or a_dict.get("filterContexts")
-            or []
+                ),
+            width="stretch",
         )
-        for it in fcs or []:
-            # Support both dict items or SDK model dicts
-            if isinstance(it, dict):
-                fid = it.get("id") or (it.get("identifier") or {}).get("id")
-                att = it.get("attributes") if isinstance(it.get("attributes"), dict) else {}
-                title = att.get("title") or att.get("name")
-                desc = att.get("description")
-                tags = att.get("tags")
-                created = att.get("createdAt") or att.get("created_at") or att.get("created")
-                updated = att.get("modifiedAt") or att.get("updated_at") or att.get("updated")
-                # try multiple places for the definition
-                definition = (
-                    att.get("content") if isinstance(att.get("content"), dict) else None
-                ) or (
-                    it.get("content") if isinstance(it.get("content"), dict) else None
-                ) or (
-                    att.get("definition") if isinstance(att.get("definition"), dict) else None
-                ) or {}
-                # if filters are stored directly on attributes, coerce
-                if not definition and isinstance(att.get("filters"), list):
-                    definition = {"filters": att.get("filters")}
-                if fid:
-                    fc_map[str(fid)] = definition
-                    # compute counts from definition (various shapes)
-                    filt_list = []
-                    if isinstance(definition, dict):
-                        if isinstance(definition.get("filters"), list):
-                            filt_list = definition.get("filters")
-                        elif isinstance(definition.get("filterContext"), dict) and isinstance(definition.get("filterContext").get("filters"), list):
-                            filt_list = definition.get("filterContext").get("filters")
-                    rows.append({
-                        "id": fid,
-                        "title": title,
-                        "description": desc,
-                        "tags": tags,
-                        "created_at": created,
-                        "modified_at": updated,
-                        "filter_count": len(filt_list) if isinstance(filt_list, list) else 0,
-                        "definition": definition,
-                        "dashboards_using": used_counts.get(str(fid), 0),
-                    })
+    else:
+        st.info("No schedules in this workspace.")
+
+    st.subheader(f"🔔 Alerts{label_suffix}")
+    if alerts:
+            st.dataframe(
+                pd.DataFrame(
+                    automation_rows(
+                        alerts,
+                        table_kind="alert",
+                        include_filter_context=bool(context_label),
+                    )
+                ),
+            width="stretch",
+        )
+    else:
+        st.info("No alerts in this workspace.")
+
+    st.subheader("📬 Notification Channels")
+    try:
+        channels = gd.get_declarative_notification_channels()
+        if channels:
+            st.dataframe(pd.DataFrame(notification_channel_rows(channels)), width="stretch")
+            st.caption("Organization-level notification channels (SDK: catalog_organization.get_declarative_notification_channels)")
+        else:
+            st.info("No notification channels in the organization.")
+    except Exception as e:
+        st.warning(f"Could not load notification channels: {e}")
+
+
+def ensure_workspace_semantics(gd, workspace_id):
+    if not workspace_id:
+        st.session_state["workspace_semantics"] = {}
+        return {}
+    cached_workspace_id = st.session_state.get("workspace_semantics_workspace_id")
+    cached_semantics = st.session_state.get("workspace_semantics")
+    if cached_workspace_id == workspace_id and cached_semantics:
+        return cached_semantics
+    try:
+        semantics = gd.collect_workspace_semantics(workspace_id)
     except Exception:
-        pass
-    # If nothing extracted, try to derive minimal rows from dashboards
-    if not rows and isinstance(dashes_df, DataFrame) and not dashes_df.empty and "filter_context_id" in dashes_df.columns:
-        try:
-            fcs = dashes_df[["filter_context_id", "title"]].dropna().copy()
-            fcs = fcs.groupby("filter_context_id").first().reset_index()
-            for _, r in fcs.iterrows():
-                fid = str(r.get("filter_context_id"))
-                rows.append({
-                    "id": fid,
-                    "title": r.get("title"),
-                    "description": None,
-                    "tags": None,
-                    "created_at": None,
-                    "modified_at": None,
-                    "filter_count": None,
-                    "definition": None,
-                    "dashboards_using": used_counts.get(fid, 0),
-                })
-        except Exception:
-            pass
-    return rows, fc_map
+        semantics = {}
+    st.session_state["workspace_semantics_workspace_id"] = workspace_id
+    st.session_state["workspace_semantics"] = semantics
+    return semantics
+
+
+def find_dashboard_record(semantics, dashboard_title):
+    for dashboard in semantics.get("dashboards", []):
+        if dashboard.get("title") == dashboard_title:
+            return dashboard
+    return None
+
+
+def find_filter_context_record(semantics, filter_context_title):
+    for filter_context in semantics.get("filter_contexts", []):
+        if filter_context.get("title") == filter_context_title:
+            return filter_context
+    return None
+
+
+def find_visualization_record(semantics, visualization_title):
+    for visualization in semantics.get("visualizations", []):
+        if visualization.get("title") == visualization_title:
+            return visualization
+    return None
+
+
+def rows_from_dashboard_shares(semantics, dashboard_id):
+    rows = []
+    for share in semantics.get("dashboard_shares", {}).get(dashboard_id, []):
+        assignee_id = share.get("assignee_id")
+        assignee_type = share.get("assignee_type")
+        if not assignee_id or not assignee_type:
+            continue
+        rows.append({
+            "Assignee ID": assignee_id,
+            "Type": assignee_type,
+            "Permissions": ", ".join(share.get("permissions", [])),
+        })
+    return rows
+
+
+def load_default_secret_values():
+    """
+    Resolve optional workspace and datasource defaults from Streamlit Secrets.
+    """
+    return {
+        "workspace_id": st.secrets.get("GOODDATA_DEFAULT_WORKSPACE", ""),
+        "datasource_id": st.secrets.get("GOODDATA_DEFAULT_DATASOURCE", ""),
+        "env_name": "streamlit-secrets",
+    }
 
 
 def main():
     # session variables
-    #if "analytics" not in st.session_state:  # for backups
-    #    st.session_state["analytics"] = []
     if "gd" not in st.session_state:
         st.session_state["gd"] = LoadGoodDataSdk(st.secrets["GOODDATA_HOST"], st.secrets["GOODDATA_TOKEN"])
     if "timing" not in st.session_state:
         st.session_state["timing"] = []
-    # Unified per-workspace cache
-    if "ws_cache" not in st.session_state:
-        st.session_state["ws_cache"] = {}
-    if "current_ws_id" not in st.session_state:
-        st.session_state["current_ws_id"] = None
+
+    default_env_values = load_default_secret_values()
+    default_workspace_id = default_env_values["workspace_id"]
+    default_datasource_id = default_env_values["datasource_id"]
+
+    # Initialize current workspace (use default or session state)
+    if "current_workspace_id" not in st.session_state:
+        st.session_state["current_workspace_id"] = default_workspace_id
+    if "workspace_semantics" not in st.session_state:
+        st.session_state["workspace_semantics"] = {}
+    if "workspace_semantics_workspace_id" not in st.session_state:
+        st.session_state["workspace_semantics_workspace_id"] = None
+    if st.session_state["current_workspace_id"]:
+        ensure_workspace_semantics(st.session_state["gd"], st.session_state["current_workspace_id"])
 
     st.set_page_config(
         layout="wide", page_icon="favicon.ico", page_title="Streamlit-GoodData integration demo"
     )
     org = st.session_state["gd"].organization()
-    # Store organization hostname for use throughout the app
-    org_hostname = org.attributes.hostname if hasattr(org, "attributes") and hasattr(org.attributes, "hostname") else st.session_state["gd"]._host
+    current_semantics = st.session_state.get("workspace_semantics", {})
 
     with st.sidebar:
-        # Details first
-        with st.expander("Details", expanded=True):
+        # Workspace selector (first thing)
+        workspace_options = [w.name for w in st.session_state["gd"].workspaces]
+        current_workspace_name = None
+        if st.session_state["current_workspace_id"]:
+            try:
+                current_ws = st.session_state["gd"].specific(
+                    st.session_state["current_workspace_id"], of_type="workspace", by="id"
+                )
+                current_workspace_name = current_ws.name
+            except Exception:
+                current_workspace_name = None
+
+        selected_workspace_name = st.selectbox(
+            "Select Workspace",
+            options=workspace_options,
+            index=workspace_options.index(current_workspace_name) if current_workspace_name and current_workspace_name in workspace_options else 0,
+            key="workspace_selector"
+        )
+
+        # Get workspace ID from name
+        selected_workspace_id = st.session_state["gd"].get_id(selected_workspace_name, of_type="workspace")
+
+        # Check if workspace changed and confirm immediately (no separate confirm button needed)
+        workspace_changed = selected_workspace_id != st.session_state.get("current_workspace_id")
+        if workspace_changed:
+            st.warning(f"⚠️ Switching to **{selected_workspace_name}** — confirm to load.")
+            if st.button("✅ Confirm Switch", type="primary", key="confirm_switch_btn"):
+                st.session_state["current_workspace_id"] = selected_workspace_id
+                try:
+                    st.session_state["workspace_semantics"] = st.session_state["gd"].collect_workspace_semantics(selected_workspace_id)
+                    st.session_state["workspace_semantics_workspace_id"] = selected_workspace_id
+                    st.success(f"✅ Switched to: {selected_workspace_name}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Failed to load workspace: {str(e)}")
+
+        with st.expander("Workspace Content"):
+            # Content View: single label + radio (no duplicated "Content View" header)
+            dashboard_view_mode = st.radio(
+                "Content View",
+                ["Overview", "Dependent Entities Graph", "Dashboard Schema", "Dashboard Embed", "Schedules", "Dashboard Shares", "Filter Contexts"],
+                horizontal=True,
+                index=0,
+                key="dashboard_view_mode_radio"
+            )
+            st.session_state["dashboard_view_mode"] = dashboard_view_mode
+
+            if current_semantics:
+                dashboard_titles = [d.get("title") for d in current_semantics.get("dashboards", []) if d.get("title")]
+                has_dashboards = len(dashboard_titles) > 0
+                ws_dash_list = st.selectbox(
+                    "Select a dashboard",
+                    dashboard_titles if has_dashboards else ["(no dashboards)"],
+                    disabled=not has_dashboards,
+                    key="ws_dash_list_selector"
+                )
+                st.session_state["ws_dash_list"] = ws_dash_list
+                selected_dashboard_record = find_dashboard_record(current_semantics, ws_dash_list)
+                st.session_state["selected_dashboard_id"] = selected_dashboard_record.get("id") if selected_dashboard_record else None
+
+            else:
+                has_dashboards = False
+                ws_dash_list = "(no dashboards)"
+                st.session_state["ws_dash_list"] = ws_dash_list
+
+            st.divider()
+
+            # Data Actions section
+            st.subheader("Data Actions")
+            if current_semantics:
+                insight_titles = [d.get("title") for d in current_semantics.get("visualizations", []) if d.get("title")]
+                has_insights = len(insight_titles) > 0
+                df_insight = st.selectbox(
+                    "Select an Insight",
+                    insight_titles if has_insights else ["(no insights)"],
+                    disabled=not has_insights,
+                    key="df_insight_selector"
+                )
+                st.session_state["df_insight"] = df_insight
+
+                # Show default datasource info
+                if default_datasource_id:
+                    st.caption(f"Using default datasource: {default_datasource_id}")
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    clear_cache = st.button("Clear Cache", disabled=not default_datasource_id, key="clear_cache_btn")
+                with col2:
+                    display_insight = st.button("Test Retrieval", disabled=not has_insights, key="display_insight_btn")
+            else:
+                has_insights = False
+                df_insight = "(no insights)"
+                clear_cache = False
+                display_insight = False
+
+            st.divider()
+
+            # Data preparation section
+            st.subheader("Data Preparation")
+            prep_option = st.radio(
+                "Choose data preparation method:",
+                ("CSV as SQL dataset", "CSV S3 uploader", "LDM preparation"),
+                horizontal=True,
+                key="prep_option_radio"
+            )
+            st.session_state["prep_option"] = prep_option
+            uploaded_file = st.file_uploader("Upload CSV file", type=["csv"], key="csv_uploader")
+            st.session_state["uploaded_file"] = uploaded_file
+            upload_csv = st.button("Process CSV", disabled=uploaded_file is None, key="upload_csv_btn")
+
+
+        with st.expander("Admin Access"):
+            st.write("**Organization Details**")
             st.write("Hostname:", org.attributes.hostname)
             st.write("Organization id:", org.id)
-            st.text(st.session_state["gd"].tree())
-            st.write(st.session_state["gd"].identity_provider())
+            st.write("Identity provider:", org.attributes.oauth_issuer_location)
 
-        # Then the workspace selector and actions
-        ws_name = st.selectbox("Select a workspace", options=[w.name for w in st.session_state["gd"].workspaces])
-        refresh_ws = st.button("Reload workspace details")
-        # Resolve workspace id
-        ws_obj = st.session_state["gd"].specific(ws_name, of_type="workspace", by="name")
-        ws_id = ws_obj.id
-        # Ensure cache is populated on selection change or explicit reload
-        ws_cache = st.session_state.get("ws_cache", {})
-        need_load = refresh_ws or (st.session_state.get("current_ws_id") != ws_id) or (ws_id not in ws_cache)
-        if need_load:
-            with st.spinner("Loading workspace metadata..."):
-                # Analytics via high-level call (with retry logic)
-                analytics = None
-                try:
-                    analytics = st.session_state["gd"].details(wks_id=ws_id, by="id")
-                except Exception:
-                    analytics = None
-                    st.warning("Failed to fetch analytics for the selected workspace.")
-                # If analytics object exists but has no expected lists, retry by name
-                if analytics is not None and _is_empty_analytics(analytics):
+            st.divider()
+            admin_mode = st.radio(
+                "Mode",
+                ["none", "internal users", "test users", "backup and restore", "dashboard plugins"],
+                index=0,
+                key="admin_mode_radio",
+            )
+            st.session_state["restore_users_internal"] = (admin_mode == "internal users")
+            st.session_state["restore_users_testing"] = (admin_mode == "test users")
+            st.session_state["restore_mode"] = (admin_mode == "backup and restore")
+
+            if admin_mode == "backup and restore":
+                st.button("Backup selected workspace", key="backup_btn")
+
+    # Get active workspace
+    current_ws_id = st.session_state.get("current_workspace_id", default_workspace_id)
+    if current_ws_id:
+        try:
+            active_ws = st.session_state["gd"].specific(current_ws_id, of_type="workspace", by="id")
+        except Exception:
+            active_ws = None
+    else:
+        active_ws = None
+    current_semantics = ensure_workspace_semantics(st.session_state["gd"], current_ws_id) if current_ws_id else {}
+
+    # Handle restore button click FIRST (before showing restore mode UI)
+    if st.session_state.get("restore_button_clicked", False):
+        # Reset the flag immediately to prevent re-execution
+        st.session_state["restore_button_clicked"] = False
+
+        ldm_url = st.session_state.get("ldm_url", "")
+        workspace_analytics_url = st.session_state.get("workspace_analytics_url", "")
+        restore_workspace_id = st.session_state.get("restore_workspace_id", "")
+        restore_datasource_id = st.session_state.get("restore_datasource_id", "")
+        workspace_data_filters_url = st.session_state.get("workspace_data_filters_url", "")
+
+        if not ldm_url:
+            st.warning("⚠️ Please enter an LDM JSON URL")
+        elif not workspace_analytics_url:
+            st.warning("⚠️ Please enter a workspace analytics JSON URL")
+        else:
+            try:
+                with st.spinner("🔄 Restoring workspace..."):
+                    result = restore_from_url(
+                        gd_sdk=st.session_state["gd"],
+                        host=st.secrets["GOODDATA_HOST"],
+                        token=st.secrets["GOODDATA_TOKEN"],
+                        workspace_id=restore_workspace_id if restore_workspace_id else None,
+                        datasource_id=restore_datasource_id if restore_datasource_id else None,
+                        ldm_url=ldm_url,
+                        workspace_analytics_url=workspace_analytics_url,
+                        workspace_data_filters_url=workspace_data_filters_url if workspace_data_filters_url else None
+                    )
+            except Exception as e:
+                st.error(f"❌ **Error during restore execution:** {str(e)}")
+                import traceback
+                st.error(f"**Traceback:**\n```\n{traceback.format_exc()}\n```")
+                result = {
+                    "success": False,
+                    "errors": [f"Exception during restore: {str(e)}"],
+                    "warnings": [],
+                    "steps": [],
+                    "statistics": {
+                        "workspace_created": False,
+                        "workspace_updated": False,
+                        "wdf_created": 0,
+                        "wdf_updated": 0,
+                        "ldm_updated": False,
+                        "analytics_updated": False
+                    },
+                    "report": [f"❌ Exception occurred: {str(e)}"]
+                }
+
+            # Display report
+            st.markdown("---")
+            st.subheader("📋 Restore Report")
+
+            # Status badge
+            if result["success"]:
+                st.success("✅ **Restore completed successfully!**")
+            else:
+                st.error("❌ **Restore completed with errors**")
+
+            # Statistics
+            stats = result["statistics"]
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Workspace", "✓" if (stats["workspace_created"] or stats["workspace_updated"]) else "—")
+            with col2:
+                st.metric("WDF", f"{stats['wdf_created'] + stats['wdf_updated']}" if (stats["wdf_created"] + stats["wdf_updated"] > 0) else "—")
+            with col3:
+                st.metric("LDM", "✓" if stats["ldm_updated"] else "—")
+            with col4:
+                st.metric("Analytics", "✓" if stats["analytics_updated"] else "—")
+
+            # Detailed report
+            with st.expander("📄 Detailed Report", expanded=True):
+                for line in result["report"]:
+                    if line.startswith("**"):
+                        st.markdown(line)
+                    elif line.startswith("✅"):
+                        st.success(line)
+                    elif line.startswith("❌"):
+                        st.error(line)
+                    elif line.startswith("⚠️"):
+                        st.warning(line)
+                    elif line.startswith("📥") or line.startswith("📦") or line.startswith("🏢") or line.startswith("📊"):
+                        st.markdown(f"**{line}**")
+                    else:
+                        st.text(line)
+
+            # Errors section
+            if result["errors"]:
+                with st.expander("❌ Errors", expanded=True):
+                    for error in result["errors"]:
+                        st.error(f"• {error}")
+
+            # Warnings section
+            if result["warnings"]:
+                with st.expander("⚠️ Warnings", expanded=False):
+                    for warning in result["warnings"]:
+                        st.warning(f"• {warning}")
+
+            # Steps completed
+            if result["steps"]:
+                with st.expander("✅ Steps Completed", expanded=False):
+                    for step in result["steps"]:
+                        st.success(f"• {step}")
+
+    # Show restore profiles table in main area if restore mode is enabled
+    elif st.session_state.get("restore_mode", False):
+        st.header("📋 Restore Profiles Management")
+
+        # Load profiles
+        if "restore_profiles" not in st.session_state:
+            st.session_state["restore_profiles"] = load_restore_profiles()
+
+        profiles_data = st.session_state["restore_profiles"]
+        profiles_list = profiles_data.get("profiles", [])
+
+        # Ensure all profiles have required structure
+        column_order = ["name", "workspace_id", "datasource_id", "ldm_url", "workspace_analytics_url", "workspace_data_filters_url"]
+        normalized_profiles = []
+        for profile in profiles_list:
+            normalized_profile = {}
+            # Add columns in order
+            for col in column_order:
+                normalized_profile[col] = profile.get(col, "")
+            # Add any other fields
+            for k, v in profile.items():
+                if k not in normalized_profile:
+                    normalized_profile[k] = v
+            normalized_profiles.append(normalized_profile)
+
+        # If empty, add one empty row
+        if not normalized_profiles:
+            normalized_profiles = [dict.fromkeys(column_order, "")]
+
+        # Editable table in main area
+        st.write("**Restore Profiles Table** (Edit directly in the table, then select a row to deploy)")
+        edited_profiles = st.data_editor(
+            normalized_profiles,
+            width="stretch",
+            num_rows="dynamic",
+            column_config={
+                "name": st.column_config.TextColumn("Profile Name", required=True),
+                "workspace_id": st.column_config.TextColumn("Workspace ID"),
+                "datasource_id": st.column_config.TextColumn("Data Source ID"),
+                "ldm_url": st.column_config.TextColumn("LDM URL", width="large"),
+                "workspace_analytics_url": st.column_config.TextColumn("Analytics URL", width="large"),
+                "workspace_data_filters_url": st.column_config.TextColumn("WDF URL", width="large")
+            },
+            key="restore_profiles_table"
+        )
+
+        # Save profiles button
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            save_profiles = st.button("💾 Save Profiles", type="primary")
+        with col2:
+            if save_profiles:
+                # Clean up profiles: add IDs and remove empty values
+                new_profiles = []
+                for i, profile in enumerate(edited_profiles):
+                    # Add ID if missing
+                    if "id" not in profile or not profile.get("id"):
+                        profile_name = profile.get("name", "").strip()
+                        if profile_name:
+                            profile["id"] = profile_name.lower().replace(" ", "_").replace("-", "_")
+                        else:
+                            profile["id"] = f"profile_{i}"
+
+                    # Remove empty string values (but keep the structure)
+                    cleaned_profile = {}
+                    for k, v in profile.items():
+                        if v is not None and v != "":
+                            cleaned_profile[k] = v
+
+                    # Only add if it has at least a name
+                    if cleaned_profile.get("name"):
+                        new_profiles.append(cleaned_profile)
+
+                profiles_data["profiles"] = new_profiles
+                if save_restore_profiles(profiles_data):
+                    st.session_state["restore_profiles"] = profiles_data
+                    st.success("✅ Profiles saved successfully!")
+                    st.rerun()
+                else:
+                    st.error("❌ Failed to save profiles")
+
+        st.divider()
+        st.subheader("🚀 Deploy Configuration")
+
+        # Profile selection
+        if "selected_profile_idx" not in st.session_state:
+            st.session_state["selected_profile_idx"] = 0
+
+        if len(edited_profiles) > 0:
+            # Get profile names for dropdown
+            profile_names = ["-- Select Profile --"]
+            for profile in edited_profiles:
+                name = profile.get("name", "").strip()
+                profile_names.append(name if name else "Unnamed")
+
+            selected_profile_idx = st.selectbox(
+                "Select Profile to Deploy",
+                range(len(profile_names)),
+                index=st.session_state.get("selected_profile_idx", 0),
+                format_func=lambda x: profile_names[x] if x < len(profile_names) else "-- Select Profile --",
+                key="profile_selector"
+            )
+            st.session_state["selected_profile_idx"] = selected_profile_idx
+
+            # Load selected profile values
+            if selected_profile_idx > 0 and selected_profile_idx <= len(edited_profiles):
+                selected_profile = edited_profiles[selected_profile_idx - 1]
+                selected_workspace_id = str(selected_profile.get("workspace_id", "")).strip()
+                selected_datasource_id = str(selected_profile.get("datasource_id", "")).strip()
+                selected_ldm_url = str(selected_profile.get("ldm_url", "")).strip()
+                selected_analytics_url = str(selected_profile.get("workspace_analytics_url", "")).strip()
+                selected_wdf_url = str(selected_profile.get("workspace_data_filters_url", "")).strip()
+            else:
+                selected_workspace_id = ""
+                selected_datasource_id = ""
+                selected_ldm_url = ""
+                selected_analytics_url = ""
+                selected_wdf_url = ""
+        else:
+            selected_profile_idx = 0
+            st.session_state["selected_profile_idx"] = 0
+            selected_workspace_id = ""
+            selected_datasource_id = ""
+            selected_ldm_url = ""
+            selected_analytics_url = ""
+            selected_wdf_url = ""
+
+        # Form fields (pre-filled from selected profile or env defaults)
+        col1, col2 = st.columns(2)
+        with col1:
+            restore_workspace_id = st.text_input(
+                "Workspace ID (optional)",
+                value=selected_workspace_id if selected_workspace_id else default_workspace_id,
+                placeholder=default_workspace_id if default_workspace_id else "Enter workspace ID",
+                help="Target workspace ID. If not provided, will use GOODDATA_DEFAULT_WORKSPACE from environment."
+            )
+        with col2:
+            restore_datasource_id = st.text_input(
+                "Data Source ID (optional)",
+                value=selected_datasource_id if selected_datasource_id else default_datasource_id,
+                placeholder=default_datasource_id if default_datasource_id else "Enter data source ID",
+                help="Data source ID to update references in LDM. If not provided, will use GOODDATA_DEFAULT_DATASOURCE from environment."
+            )
+
+        default_ldm_url = "https://raw.githubusercontent.com/gooddata/gooddata-public-demos/refs/heads/master/ecommerce-demo/workspaces/demo/ldm.json"
+        default_analytics_url = "https://raw.githubusercontent.com/gooddata/gooddata-public-demos/refs/heads/master/ecommerce-demo/workspaces/demo/workspaceAnalytics.json"
+        default_wdf_url = "https://raw.githubusercontent.com/gooddata/gooddata-public-demos/refs/heads/master/ecommerce-demo/workspaces/demo/workspaceDataFilters.json"
+
+        ldm_url = st.text_input(
+            "LDM JSON URL *",
+            value=selected_ldm_url if selected_ldm_url else default_ldm_url,
+            help="Direct URL to the logical data model JSON file"
+        )
+
+        workspace_data_filters_url = st.text_input(
+            "Workspace Data Filters JSON URL (optional)",
+            value=selected_wdf_url if selected_wdf_url else default_wdf_url,
+            help="Direct URL to the workspace data filters JSON file. Required if LDM references workspace data filters."
+        )
+
+        workspace_analytics_url = st.text_input(
+            "Workspace Analytics JSON URL *",
+            value=selected_analytics_url if selected_analytics_url else default_analytics_url,
+            help="Direct URL to the workspace analytics JSON file"
+        )
+
+        # Store values in session state for access outside the if block
+        st.session_state["restore_workspace_id"] = restore_workspace_id
+        st.session_state["restore_datasource_id"] = restore_datasource_id
+        st.session_state["ldm_url"] = ldm_url
+        st.session_state["workspace_analytics_url"] = workspace_analytics_url
+        st.session_state["workspace_data_filters_url"] = workspace_data_filters_url
+
+        restore_button = st.button(
+            "🚀 Deploy",
+            disabled=not (ldm_url and workspace_analytics_url),
+            type="primary",
+            width="stretch",
+            key="restore_deploy_button"
+        )
+
+        # Set restore button clicked state when button is clicked
+        if restore_button:
+            st.session_state["restore_button_clicked"] = True
+            st.rerun()
+
+    # Handle user restoration - Internal users
+    elif st.session_state.get("restore_users_internal", False):
+        st.header("👥 Restore Users Internal")
+
+        # Load internal users
+        users_data = load_users_internal()
+        users_list = users_data.get("users", [])
+
+        if not users_list:
+            st.warning("⚠️ No users found in restore_SEE_users.json")
+        else:
+            # Get current deployment users
+            try:
+                current_users = st.session_state["gd"].users
+                current_user_ids = {u.id for u in current_users}
+                # Get admin users (users in admin groups)
+                admin_user_ids = set()
+                for user in current_users:
+                    if hasattr(user, 'user_groups') and user.user_groups:
+                        for group in user.user_groups:
+                            # Safely check group name
+                            group_name = getattr(group, 'name', None) or getattr(group, 'user_group_name', None) or ""
+                            if group_name and "admin" in str(group_name).lower():
+                                admin_user_ids.add(user.id)
+            except Exception as e:
+                st.error(f"❌ Failed to load current users: {str(e)}")
+                import traceback
+                st.error(f"Traceback: {traceback.format_exc()}")
+                current_user_ids = set()
+                admin_user_ids = set()
+
+            # Show ALL users from JSON, mark missing ones
+            all_users_table = []
+            non_admin_existing = []
+            admin_existing = []
+            missing = []
+
+            for user in users_list:
+                user_id = user.get("id", "")
+                user_name = f"{user.get('firstname', '')} {user.get('lastname', '')}".strip() or user_id
+                user_email = user.get("email", "")
+
+                # Get user groups from JSON
+                json_user_groups = []
+                json_groups = user.get("userGroups", [])
+                for group_ref in json_groups:
+                    if isinstance(group_ref, dict):
+                        group_id = group_ref.get("id", "")
+                        # Try to find group name from userGroups list in JSON
+                        for ug in users_data.get("userGroups", []):
+                            if ug.get("id") == group_id:
+                                json_user_groups.append(ug.get("name", group_id))
+                                break
+                        if not any(ug.get("id") == group_id for ug in users_data.get("userGroups", [])):
+                            json_user_groups.append(group_id)
+                    else:
+                        json_user_groups.append(str(group_ref))
+
+                # Check if user exists in deployment
+                exists_in_deployment = user_id in current_user_ids
+                is_admin = user_id in admin_user_ids
+
+                # Get current user groups from deployment
+                current_user_groups = []
+                if exists_in_deployment:
                     try:
-                        analytics = st.session_state["gd"].details(wks_id=ws_name, by="name")
+                        current_user = st.session_state["gd"].specific(user_id, of_type="user", by="id")
+                        if hasattr(current_user, 'user_groups') and current_user.user_groups:
+                            for g in current_user.user_groups:
+                                group_name = getattr(g, 'name', None) or getattr(g, 'user_group_name', None) or getattr(g, 'id', None) or str(g)
+                                if group_name:
+                                    current_user_groups.append(str(group_name))
                     except Exception:
                         pass
-                
-                # LDM via high-level call (SDK-first, API fallback handled internally)
-                datasets_rows, columns_rows, refs_rows = st.session_state["gd"].load_ldm(ws_id)
 
-                # Ensure workspace-bound data sources are available for mapping and cache
-                workspace_datasources = _extract_datasources(st.session_state.get("gd"))
-                # Attempt to enrich LDM columns with data source via PDM table mapping (best-effort)
-                # High-level call (SDK-first, API fallback handled internally)
-                table_to_ds = st.session_state["gd"].load_pdm_mapping(ws_id)
+                # Determine status
+                if not exists_in_deployment:
+                    status = "Missing"
+                    missing.append(user)
+                elif is_admin:
+                    status = "Admin"
+                    admin_existing.append(user)
+                else:
+                    status = "Active"
+                    non_admin_existing.append(user)
 
-                # If we have any table->DS mapping, annotate columns_rows and datasets_rows summaries
-                if table_to_ds and columns_rows:
-                    # Pre-build ds id->name map
-                    dsid_to_name = {str(d.get("id")): d.get("name") for d in workspace_datasources}
-                    for col in columns_rows:
-                        # Prefer explicit source_table captured earlier
-                        table_name = col.get("source_table")
-                        sc = col.get("source_column")
-                        # If no explicit table, try parsing from string-valued source_column
-                        if not table_name and isinstance(sc, str):
-                            s = sc
-                            # Common forms: schema.table.column or table.column
-                            parts = s.split(".")
-                            if len(parts) >= 2:
-                                table_name = parts[-2]
-                        # If source_column is dict, try its table field
-                        if not table_name and isinstance(sc, dict):
-                            table_name = sc.get("table") or sc.get("name") or sc.get("dataset")
-                        if table_name:
-                            key_full = str(table_name).lower()
-                            key_base = key_full.split(".")[-1]
-                            dsid = table_to_ds.get(key_full) or table_to_ds.get(key_base)
-                            if dsid:
-                                col["data_source_id"] = dsid
-                                col["data_source_name"] = dsid_to_name.get(str(dsid))
-                    # Aggregate to dataset level (majority data source among its columns)
-                    ds_majority = {}
-                    for ds in datasets_rows:
-                        dsid = ds.get("dataset_id")
-                        ds_cols = [c for c in columns_rows if c.get("dataset_id") == dsid and c.get("data_source_id")]
-                        votes = Counter([c.get("data_source_id") for c in ds_cols])
-                        if votes:
-                            top_id, _ = votes.most_common(1)[0]
-                            ds["data_source_id"] = top_id
-                            ds["data_source_name"] = dsid_to_name.get(str(top_id))
+                # Format user ID with strikethrough if missing
+                display_user_id = f"~~{user_id}~~" if not exists_in_deployment else user_id
+                display_name = f"~~{user_name}~~" if not exists_in_deployment else user_name
+                display_email = f"~~{user_email}~~" if not exists_in_deployment else user_email
 
-                # Build cache entry and set current ws
-                ds_df = DataFrame(datasets_rows)
-                cols_df = DataFrame(columns_rows)
-                refs_df = DataFrame(refs_rows)
-                # Prebuild analytics dataframes for render (to avoid recomputation each rerun)
-                try:
-                    def get_lists(aobj):
-                        if not aobj:
-                            return [], [], []
-                        mx = getattr(aobj, "metrics", None) or getattr(aobj, "measures", [])
-                        vz = getattr(aobj, "visualization_objects", None) or getattr(aobj, "visualizations", None) or getattr(aobj, "insights", [])
-                        db = getattr(aobj, "analytical_dashboards", None) or getattr(aobj, "dashboards", [])
-                        return list(mx or []), list(vz or []), list(db or [])
-                    _mx, _vz, _db = get_lists(analytics)
-                    pre_metrics_df = DataFrame(build_metric_rows(_mx)) if _mx else DataFrame()
-                    pre_visuals_df = DataFrame(build_visual_rows(_vz)) if _vz else DataFrame()
-                    pre_filter_ctx_rows, fc_map = build_filter_context_rows_from_analytics(analytics)
-                    pre_filter_ctx_df = DataFrame(pre_filter_ctx_rows)
-                    pre_dashes_df = DataFrame(build_dashboard_rows(_db, ws_id, fc_map)) if _db else DataFrame()
-                except Exception:
-                    pre_metrics_df = DataFrame(); pre_visuals_df = DataFrame(); pre_dashes_df = DataFrame(); pre_filter_ctx_df = DataFrame()
-                st.session_state.setdefault("ws_cache", {})[ws_id] = {
-                    "name": ws_name,
-                    "analytics": analytics,
-                    "ldm_ds_df": ds_df,
-                    "ldm_cols_df": cols_df,
-                    "ldm_refs_df": refs_df,
-                    "ldm_counts": {"tables": len(ds_df), "columns": len(cols_df)},
-                    "datasources": workspace_datasources,
-                    "metrics_df": pre_metrics_df,
-                    "visuals_df": pre_visuals_df,
-                    "dashes_df": pre_dashes_df,
-                    "filter_ctx_df": pre_filter_ctx_df,
-                }
-                st.session_state["current_ws_id"] = ws_id
+                all_users_table.append({
+                    "Select": False if not exists_in_deployment else False,  # Can't select missing users
+                    "User ID": display_user_id,
+                    "Name": display_name,
+                    "Email": display_email,
+                    "Status": status,
+                    "JSON Groups": ", ".join(json_user_groups) if json_user_groups else "—",
+                    "Current Groups": ", ".join(current_user_groups) if current_user_groups else "—",
+                    "Workspace": ""
+                })
 
-        # Sidebar cache summary
-        ws_cache = st.session_state.get("ws_cache", {})
-        cache_entry_sb = ws_cache.get(ws_id, {})
-        counts_sb = cache_entry_sb.get("ldm_counts", {"tables": 0, "columns": 0})
-        st.caption(f"Cached: {counts_sb.get('tables', 0)} tables • {counts_sb.get('columns', 0)} columns")
-        with st.expander("Data actions"):
-            current_ws_id = st.session_state.get("current_ws_id")
-            cache_entry = ws_cache.get(current_ws_id) or {}
-            analytics = cache_entry.get("analytics")
+            # Show summary
+            st.write(f"**Users Summary:**")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total in JSON", len(users_list))
+            with col2:
+                st.metric("Active (Non-Admin)", len(non_admin_existing))
+            with col3:
+                st.metric("Admin", len(admin_existing))
+            with col4:
+                st.metric("Missing", len(missing))
 
-            viz_options = [d.title for d in getattr(analytics, "visualization_objects", [])] if analytics else []
-            df_insight = st.selectbox(
-                "Select an Insight",
-                options=viz_options if viz_options else ["<no insights>"] ,
-                disabled=not bool(viz_options),
-            )
-            # Datasources from SDK wrapper (already available in st.session_state["gd"].datasources)
-            ds_bound = _extract_datasources(st.session_state.get("gd"))
-            ds_options = [d.get("name") for d in ds_bound] if ds_bound else []
-            # Try to derive assigned data source from cached LDM datasets majority mapping
-            assigned_ds = None
-            try:
-                ds_df_cached = cache_entry.get("ldm_ds_df")
-                if ds_df_cached is not None and not ds_df_cached.empty and "data_source_id" in ds_df_cached.columns:
-                    votes = Counter([str(x) for x in ds_df_cached["data_source_id"].dropna().astype(str).tolist()])
-                    if votes:
-                        top_id, _ = votes.most_common(1)[0]
-                        name_map = {str(d.get("id")): d.get("name") for d in ds_bound}
-                        assigned_ds = {"id": top_id, "name": name_map.get(str(top_id)) or str(top_id)}
-            except Exception:
-                assigned_ds = None
+            if missing:
+                st.info(f"ℹ️ {len(missing)} user(s) from JSON not found in current deployment (shown with strikethrough)")
 
-            if assigned_ds:
-                st.selectbox("Assigned data source", [assigned_ds.get("name")], index=0, disabled=True)
-                ds_list = assigned_ds.get("name")
-                clear_cache = st.button("Clear cache for assigned data source")
+            if all_users_table:
+                st.write(f"**All Users from JSON** (Missing users shown with strikethrough)")
+
+                # Prepare table data
+                table_data = all_users_table
+
+                # Editable table
+                st.write("**Users Table** (Select users and assign workspaces - Missing users cannot be selected)")
+                edited_table = st.data_editor(
+                    table_data,
+                    width="stretch",
+                    column_config={
+                        "Select": st.column_config.CheckboxColumn("Select", default=False),
+                        "User ID": st.column_config.TextColumn("User ID", disabled=True),
+                        "Name": st.column_config.TextColumn("Name", disabled=True),
+                        "Email": st.column_config.TextColumn("Email", disabled=True),
+                        "Status": st.column_config.TextColumn("Status", disabled=True),
+                        "JSON Groups": st.column_config.TextColumn("JSON Groups", disabled=True),
+                        "Current Groups": st.column_config.TextColumn("Current Groups", disabled=True),
+                        "Workspace": st.column_config.SelectboxColumn(
+                            "Workspace",
+                            options=[""] + [w.name for w in st.session_state["gd"].workspaces],
+                            required=False
+                        )
+                    },
+                    key="users_internal_table"
+                )
+
+                # Get selected users and their workspace assignments
+                selected_user_workspaces = {}
+                for row in edited_table:
+                    if row.get("Select", False):
+                        user_id_raw = row.get("User ID", "")
+                        # Remove strikethrough formatting if present
+                        user_id = user_id_raw.replace("~~", "").strip()
+                        workspace_name = row.get("Workspace", "").strip()
+                        status = row.get("Status", "")
+
+                        # Only allow selection of existing users (not missing ones)
+                        if user_id and workspace_name and status != "Missing":
+                            selected_user_workspaces[user_id] = workspace_name
+
+                st.session_state["selected_user_workspaces"] = selected_user_workspaces
+
+                if selected_user_workspaces:
+                    st.write(f"**Ready to assign {len(selected_user_workspaces)} user(s) to workspaces:**")
+                    for user_id, workspace_name in selected_user_workspaces.items():
+                        st.write(f"- {user_id} → {workspace_name}")
+
+                    deploy_users_btn = st.button(
+                        f"🚀 Assign {len(selected_user_workspaces)} User(s) to Workspaces",
+                        type="primary",
+                        key="deploy_users_internal_btn"
+                    )
+
+                    if deploy_users_btn:
+                        st.session_state["deploy_users_internal_clicked"] = True
             else:
-                # Fallback to manual selection if assignment cannot be derived
-                ds_list = st.selectbox("Assigned data source", ds_options if ds_options else ["<no datasources>"] , disabled=not bool(ds_options))
-                clear_cache = st.button("Clear cache for selected data source", disabled=not bool(ds_options))
-            # Enable test only when we have an insight and at least one DS option or an assigned DS
-            has_ds_available = bool(assigned_ds) or bool(ds_options)
-            run_insight_test = st.button("Test Insight Retrieval", disabled=not (bool(viz_options) and has_ds_available))
+                st.info("ℹ️ No non-admin users found in current deployment. All users from JSON are either admins or not present.")
 
-            # Persist selections for use outside the sidebar scope
-            if run_insight_test:
-                st.session_state["_insight_test_request"] = {
-                    "insight_title": df_insight,
-                    "datasource_name": ds_list,
-                    "ws_id": ws_id,
-                }
-        with st.expander("Data preparation"):
-            prep_option = st.radio(
-                "1. Choose data preparation method:",
-                ("CSV as SQL dataset", "CSV S3 uploader", "LDM preparation")
+    # Handle user restoration - Testing users
+    elif st.session_state.get("restore_users_testing", False):
+        st.header("🧪 Restore Users Testing")
+
+        # Load testing users
+        if "users_testing" not in st.session_state:
+            st.session_state["users_testing"] = load_users_testing()
+
+        # Option to reset from template
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            reset_from_template = st.button("🔄 Reset from Template", help="Reset to template configuration", key="reset_testing_template_btn")
+        with col2:
+            st.caption("💡 Edit the template in `restore_test_users_template.json` to change the default structure")
+
+        if reset_from_template:
+            st.session_state["users_testing"] = load_users_testing_template()
+            st.success("✅ Reset to template configuration")
+            st.rerun()
+
+        users_data = st.session_state["users_testing"]
+        users_list = users_data.get("users", [])
+        user_groups_list = users_data.get("userGroups", [])
+
+        # Editable table for users
+        st.write("**Testing Users Configuration** (Edit directly in the table)")
+
+        # Normalize users for editing
+        column_order = ["id", "firstname", "lastname", "email", "userGroups"]
+        normalized_users = []
+        for user in users_list:
+            normalized_user = {}
+            for col in column_order:
+                if col == "userGroups":
+                    # Convert userGroups list to string representation
+                    groups = user.get(col, [])
+                    if isinstance(groups, list):
+                        normalized_user[col] = ", ".join([g.get("id", "") if isinstance(g, dict) else str(g) for g in groups])
+                    else:
+                        normalized_user[col] = str(groups)
+                else:
+                    normalized_user[col] = user.get(col, "")
+            normalized_users.append(normalized_user)
+
+        if not normalized_users:
+            normalized_users = [dict.fromkeys(column_order, "")]
+
+        edited_users = st.data_editor(
+            normalized_users,
+            width="stretch",
+            num_rows="dynamic",
+            column_config={
+                "id": st.column_config.TextColumn("User ID", required=True),
+                "firstname": st.column_config.TextColumn("First Name"),
+                "lastname": st.column_config.TextColumn("Last Name"),
+                "email": st.column_config.TextColumn("Email"),
+                "userGroups": st.column_config.TextColumn("User Groups (comma-separated IDs)")
+            },
+            key="users_testing_table"
+        )
+
+        # Save button
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            save_users_testing = st.button("💾 Save Configuration", type="primary")
+
+        if save_users_testing:
+            # Convert back to proper format
+            new_users = []
+            for user_row in edited_users:
+                if user_row.get("id"):
+                    user_obj = {
+                        "id": user_row.get("id", ""),
+                        "firstname": user_row.get("firstname", ""),
+                        "lastname": user_row.get("lastname", ""),
+                        "email": user_row.get("email", ""),
+                        "permissions": [],
+                        "settings": [],
+                        "userGroups": []
+                    }
+                    # Parse userGroups string
+                    groups_str = user_row.get("userGroups", "")
+                    if groups_str:
+                        group_ids = [g.strip() for g in groups_str.split(",") if g.strip()]
+                        user_obj["userGroups"] = [{"id": gid, "type": "userGroup"} for gid in group_ids]
+                    new_users.append(user_obj)
+
+            users_data["users"] = new_users
+            if save_users_testing(users_data):
+                st.success("✅ Configuration saved!")
+                st.session_state["users_testing"] = users_data
+            else:
+                st.error("❌ Failed to save configuration")
+
+        st.divider()
+        st.write("**Deploy Testing Users**")
+
+        # Workspace selector for deployment
+        workspace_options = [w.name for w in st.session_state["gd"].workspaces]
+        selected_workspace_name_testing = st.selectbox(
+            "Select Workspace to Deploy Users",
+            options=["-- Select Workspace --"] + workspace_options,
+            key="user_workspace_selector_testing"
+        )
+
+        if selected_workspace_name_testing and selected_workspace_name_testing != "-- Select Workspace --":
+            selected_workspace_id_testing = st.session_state["gd"].get_id(selected_workspace_name_testing, of_type="workspace")
+
+            deploy_testing_users_btn = st.button(
+                "🚀 Deploy Testing Users",
+                disabled=not users_list,
+                type="primary",
+                key="deploy_users_testing_btn"
             )
-            uploaded_file = st.file_uploader("2. Upload your CSV file", type=["csv"])
-            upload_csv = st.button("3. Process CSV")
-        with st.expander("Backup & Restore"):
-            st.write("Need to find a way to backup and restore using python sdk")
-            backup = st.button("Backup selected workspace")
-            # backup_ldm = st.download_button("Backup data model for selected workspace", st.session_state["analytics"])
-            # backup_analytics = st.download_button("Backup analytics for selected workspace", st.session_state["analytics"])
 
-    active_ws = st.session_state["gd"].specific(ws_name, of_type="workspace", by="name")
-    #if backup_analytics:
-    #    st.write(st.session_state["gd"].export(active_ws))
-    if backup:
+            if deploy_testing_users_btn:
+                st.session_state["deploy_users_testing_clicked"] = True
+                st.session_state["deploy_users_testing_workspace_id"] = selected_workspace_id_testing
+
+    # Dashboard plugins registry
+    elif st.session_state.get("admin_mode_radio") == "dashboard plugins":
+        st.header("Dashboard Plugins Registry")
+
+        plugin_data = load_plugin_list()
+        plugins = plugin_data.get("plugins", [])
+
+        if not plugins:
+            st.warning("No plugins found in DB_Plugin_list.json")
+        else:
+            # Summary counts
+            deployed = [p for p in plugins if p.get("url")]
+            local_only = [p for p in plugins if not p.get("url")]
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Plugins", len(plugins))
+            with col2:
+                st.metric("Deployed to S3", len(deployed))
+            with col3:
+                st.metric("Local Source Only", len(local_only))
+
+            st.divider()
+
+            # Build display table
+            table_rows = []
+            for p in plugins:
+                trigger = p.get("trigger", {})
+                trigger_type = trigger.get("type", "none")
+                if trigger_type == "visual_name":
+                    trigger_label = "visual: " + ", ".join(trigger.get("visual_names", []))
+                elif trigger_type == "visual_type":
+                    trigger_label = "type: " + ", ".join(trigger.get("visual_types", []))
+                else:
+                    trigger_label = "none"
+
+                table_rows.append({
+                    "Name": p.get("name", p["id"]),
+                    "Bucket": p.get("bucket", "—"),
+                    "Trigger": trigger_label,
+                    "Source Project": p.get("source_project", "—"),
+                    "Compiled": "yes" if p.get("react_compiled") else "no",
+                    "URL": p.get("url", ""),
+                    "Description": p.get("description", ""),
+                })
+
+            edited = st.data_editor(
+                table_rows,
+                width="stretch",
+                num_rows="fixed",
+                column_config={
+                    "Name": st.column_config.TextColumn("Name", disabled=True),
+                    "Bucket": st.column_config.TextColumn("Bucket", disabled=True),
+                    "Trigger": st.column_config.TextColumn("Trigger", width="medium"),
+                    "Source Project": st.column_config.TextColumn("Source Project", width="medium"),
+                    "Compiled": st.column_config.TextColumn("Compiled", disabled=True),
+                    "URL": st.column_config.LinkColumn("URL", width="large"),
+                    "Description": st.column_config.TextColumn("Description", width="large"),
+                },
+                key="plugins_table",
+            )
+
+            st.divider()
+            col1, col2, col3 = st.columns([1, 1, 5])
+            with col1:
+                if st.button("💾 Save Changes", type="primary", key="save_plugins_btn"):
+                    for i, row in enumerate(edited):
+                        if i < len(plugins):
+                            plugins[i]["description"] = row.get("Description", "")
+                    plugin_data["plugins"] = plugins
+                    if save_plugin_list(plugin_data):
+                        st.success("Saved.")
+                    else:
+                        st.error("Failed to save.")
+            with col2:
+                if st.button("🔄 Discover from S3", key="discover_plugins_s3_btn"):
+                    with st.spinner("Scanning S3 buckets…"):
+                        try:
+                            env_vars = dict(st.secrets)
+                            result = discover_plugins_from_s3(env_vars)
+                            added = result.get("added", [])
+                            upd = result.get("updated", [])
+                            errs = result.get("errors", [])
+                            st.success(
+                                f"Discovery done — {len(added)} added, {len(upd)} updated, "
+                                f"{result.get('total', 0)} total"
+                            )
+                            if added:
+                                st.info("Added: " + ", ".join(added))
+                            if errs:
+                                for e in errs:
+                                    st.warning(e)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Sync failed: {e}")
+
+            with st.expander("Raw JSON"):
+                st.code(pretty_json(plugin_data), language="json")
+
+            st.divider()
+            st.subheader("Deploy to Workspace")
+
+            # Show what's already registered in the current workspace
+            current_ws_id_for_plugins = st.session_state.get("current_workspace_id", "")
+            if current_ws_id_for_plugins:
+                try:
+                    registered = list_workspace_plugins(
+                        st.secrets["GOODDATA_HOST"], st.secrets["GOODDATA_TOKEN"], current_ws_id_for_plugins
+                    )
+                except Exception:
+                    registered = []
+
+                registered_ids = {p.get("id") for p in registered}
+                if registered:
+                    st.caption(f"Already registered in this workspace ({len(registered)}):")
+                    reg_rows = [
+                        {
+                            "ID": p.get("id", ""),
+                            "Name": (p.get("attributes") or {}).get("name", ""),
+                            "URL": (p.get("attributes") or {}).get("url", ""),
+                        }
+                        for p in registered
+                    ]
+                    st.dataframe(reg_rows, width="stretch", hide_index=True)
+                else:
+                    st.caption("No plugins registered in this workspace yet.")
+
+                st.divider()
+
+                # Selector: only plugins with a deployed URL
+                deployable = [p for p in plugins if p.get("url")]
+                deployable_names = [f"{p['name']}  [{p['id']}]" for p in deployable]
+
+                selected_deploy_name = st.selectbox(
+                    "Select plugin to register",
+                    options=deployable_names,
+                    key="deploy_plugin_selector",
+                )
+                selected_deploy_plugin = deployable[deployable_names.index(selected_deploy_name)] if deployable_names else None
+
+                if selected_deploy_plugin:
+                    already = selected_deploy_plugin["id"] in registered_ids
+                    st.caption(
+                        f"URL: {selected_deploy_plugin['url']}"
+                        + ("  ✅ already registered" if already else "")
+                    )
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        label = "🔄 Update in workspace" if already else "🚀 Register in workspace"
+                        if st.button(label, type="primary", key="register_plugin_btn"):
+                            with st.spinner("Calling GoodData API…"):
+                                result = register_plugin_with_workspace(
+                                    st.secrets["GOODDATA_HOST"],
+                                    st.secrets["GOODDATA_TOKEN"],
+                                    current_ws_id_for_plugins,
+                                    selected_deploy_plugin,
+                                )
+                            if result["success"]:
+                                st.success(f"✅ Plugin {result['action']}: `{result['id']}`")
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {result['error']}")
+                    with col2:
+                        if st.button("📄 Write YAML to analytics/", key="write_yaml_btn"):
+                            try:
+                                path = write_plugin_yaml_helper(selected_deploy_plugin)
+                                st.success(f"Written: `{path}`")
+                            except Exception as e:
+                                st.error(f"❌ {e}")
+            else:
+                st.info("Select a workspace first to deploy plugins.")
+
+    # Handle data actions (button clicks - check these before view modes)
+    elif st.session_state.get("clear_cache_btn", False):
+        if default_datasource_id:
+            st.session_state["gd"].clear_cache(ds_id=default_datasource_id)
+            st.success(f"✅ Cache cleared for datasource: {default_datasource_id}")
+            st.rerun()  # Rerun to reset button state
+        else:
+            st.error("❌ No default datasource ID found. Please set GOODDATA_DEFAULT_DATASOURCE in your environment.")
+            st.rerun()  # Rerun to reset button state
+    elif st.session_state.get("display_insight_btn", False):
+        df_insight = st.session_state.get("df_insight", "")
+        if df_insight and df_insight != "(no insights)":
+            if not current_semantics:
+                st.error("❌ No analytics content available. Please ensure a workspace with content is selected.")
+            else:
+                st.info(f"Testing retrieval of insight '{df_insight}' from default datasource '{default_datasource_id}'...")
+                t0 = time_it()
+                insight_obj = find_visualization_record(current_semantics, df_insight)
+                if insight_obj is not None:
+                    try:
+                        # Get insight ID first
+                        insight_id = insight_obj.get("id")
+                        # Use GoodData pandas to get the data frame
+                        frames = st.session_state["gd"]._gp.data_frames(current_ws_id)
+                        active_ins = frames.for_visualization(visualization_id=insight_id)
+                        t1 = time_it(t0, True)
+                        st.success(f"Insight retrieved in {t1:.2f} seconds.")
+                        # Append timing info
+                        st.session_state["timing"].append({
+                            "insight": df_insight,
+                            "datasource": default_datasource_id,
+                            "timestamp": datetime.now().isoformat(),
+                            "elapsed": t1
+                        })
+                        # Show time series plot for ALL insights
+                        if st.session_state["timing"]:
+
+                            timing_data = st.session_state["timing"]
+                            timing_data = sorted(timing_data, key=lambda x: (x["insight"], x["timestamp"]))
+
+                            # Convert to DataFrame for Altair
+                            df_timing = pd.DataFrame(timing_data)
+                            # Ensure timestamp is datetime
+                            df_timing['timestamp'] = pd.to_datetime(df_timing['timestamp'])
+
+                            st.caption("Time series of retrieval times for all insights.")
+                            chart = alt.Chart(df_timing).mark_line(point=True).encode(
+                                x=alt.X('timestamp:T', title='Timestamp'),
+                                y=alt.Y('elapsed:Q', title='Retrieval time (s)'),
+                                color=alt.Color('insight:N', title='Insight'),
+                                tooltip=['insight', 'datasource', 'timestamp:T', 'elapsed:Q']
+                            ).properties(width='container', height=350)
+                            st.altair_chart(chart, width="stretch")
+
+                            display_data = [
+                                {
+                                    "Insight": item["insight"],
+                                    "Data source": item["datasource"],
+                                    "Timestamp": item["timestamp"],
+                                    "Retrieval time (s)": item["elapsed"]
+                                }
+                                for item in timing_data
+                            ]
+                            st.dataframe(display_data, width="stretch")
+                        # Show the dataframe with the insight's content
+                        st.caption("Insight object data frame (actual data):")
+                        st.dataframe(active_ins)
+                    except Exception as e:
+                        st.error(f"Error retrieving insight: {e}")
+                else:
+                    st.warning("Selected insight not found.")
+        else:
+            st.warning("Please select an insight first.")
+
+    # Handle dashboard view modes (only if no button actions and not in restore mode)
+    elif not st.session_state.get("restore_mode", False):
+        dashboard_view_mode = st.session_state.get("dashboard_view_mode", "Overview")
+
+        if dashboard_view_mode == "Filter Contexts":
+            if current_semantics:
+                selected_dashboard_id = st.session_state.get("selected_dashboard_id")
+                filter_context_records = dashboard_filter_context_records(
+                    current_semantics,
+                    selected_dashboard_id,
+                )
+
+                if filter_context_records:
+                    st.write(f"**Filter Contexts** - {active_ws.name if active_ws else 'Current Workspace'}")
+                    for index, selected_fc in enumerate(filter_context_records, start=1):
+                        title = selected_fc.get("title") or selected_fc.get("id") or f"Filter Context {index}"
+                        fc_data = [{
+                            "ID": selected_fc.get("id", "N/A"),
+                            "Title": title,
+                            "Description": selected_fc.get("description", "") or "",
+                            "Type": "Filter Context"
+                        }]
+                        st.dataframe(pd.DataFrame(fc_data), width="stretch", hide_index=True)
+                        fc_dict = selected_fc.get("raw", {})
+                        content = fc_dict.get("content") or {}
+                        filters_list = selected_fc.get("filters", [])
+                        if filters_list:
+                            for i, f in enumerate(filters_list):
+                                if isinstance(f, dict):
+                                    if "dateFilter" in f:
+                                        df = f["dateFilter"]
+                                        st.markdown(f"**Filter {i+1}: Date** — granularity: `{df.get('granularity', '')}`, from: `{df.get('from')}`, to: `{df.get('to')}`, type: `{df.get('type', '')}`")
+                                    elif "attributeFilter" in f:
+                                        af = f["attributeFilter"]
+                                        ident = (af.get("displayForm") or {}).get("identifier") or {}
+                                        st.markdown(f"**Filter {i+1}: Attribute** — id: `{ident.get('id', '')}`, type: `{ident.get('type', '')}`, negativeSelection: `{af.get('negativeSelection')}`, localIdentifier: `{af.get('localIdentifier', '')}`")
+                                        uris = (af.get("attributeElements") or {}).get("uris") or []
+                                        if uris:
+                                            st.caption(f"Elements: {uris[:10]}{'...' if len(uris) > 10 else ''}")
+                                    else:
+                                        st.json(f)
+                                else:
+                                    st.write(f"Filter {i+1}:", f)
+                            st.caption(f"Content version: {content.get('version', 'N/A')}")
+                        with st.expander(f"Raw JSON: {title}"):
+                            st.code(
+                                pretty_json(
+                                    fc_dict,
+                                    fallback={
+                                        "id": selected_fc.get("id", ""),
+                                        "title": title,
+                                        "content": content,
+                                        "description": selected_fc.get("description", ""),
+                                    },
+                                ),
+                                language="json",
+                            )
+                        if index < len(filter_context_records):
+                            st.divider()
+                else:
+                    st.info("No filter contexts found for the selected dashboard in the current workspace.")
+            else:
+                st.info("Please select a workspace to view filter contexts.")
+
+        # Handle other content view modes (not Filter Contexts)
+        elif dashboard_view_mode != "Filter Contexts":
+            if dashboard_view_mode == "Overview":
+                if active_ws:
+                    st.write(f"**Workspace: {active_ws.name}**")
+                    overview_stats = workspace_overview_stats(current_semantics) if current_semantics else {}
+                    selected_dashboard_id = st.session_state.get("selected_dashboard_id")
+                    selected_dashboard_filter_stats = dashboard_effective_filter_stats(current_semantics, selected_dashboard_id) if selected_dashboard_id else {"filter_context_objects": 0, "effective_filters": 0}
+                    automations = get_workspace_automations(st.session_state["gd"], current_ws_id) if current_ws_id else {}
+                    schedules = automations.get("schedules", [])
+                    alerts = automations.get("alerts", [])
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Dashboards", overview_stats.get("dashboards", 0))
+                    with col2:
+                        st.metric("Visualizations", overview_stats.get("visualizations", 0))
+                    with col3:
+                        st.metric("Metrics", overview_stats.get("metrics", 0))
+                    with col4:
+                        st.metric("Filter Context Objects", overview_stats.get("filter_contexts", 0))
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("AFM Measures", overview_stats.get("afm_measures", 0))
+                    with col2:
+                        st.metric("AFM Attributes", overview_stats.get("afm_attributes", 0))
+                    with col3:
+                        st.metric("AFM Filters", overview_stats.get("afm_filters", 0))
+                    with col4:
+                        st.metric("Selected Dashboard Filters", selected_dashboard_filter_stats.get("effective_filters", 0))
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Dependency Nodes", overview_stats.get("dependency_nodes", 0))
+                    with col2:
+                        st.metric("Dependency Edges", overview_stats.get("dependency_edges", 0))
+                    with col3:
+                        st.metric("Schedules", len(schedules))
+                    with col4:
+                        st.metric("Dashboard Shares", overview_stats.get("dashboard_shares", 0))
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Selected Dashboard FC Objects", selected_dashboard_filter_stats.get("filter_context_objects", 0))
+                    with col2:
+                        st.metric("Alerts", len(alerts))
+                    with col3:
+                        st.metric("Selected Dashboard", 1 if selected_dashboard_id else 0)
+                    with col4:
+                        st.metric("Workspace Filter Objects", overview_stats.get("filter_contexts", 0))
+
+                    st.divider()
+                    st.subheader("Overview Summary")
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {"Category": "Dashboards", "Count": overview_stats.get("dashboards", 0)},
+                                {"Category": "Visualizations", "Count": overview_stats.get("visualizations", 0)},
+                                {"Category": "Metrics", "Count": overview_stats.get("metrics", 0)},
+                                {"Category": "Filter Context Objects", "Count": overview_stats.get("filter_contexts", 0)},
+                                {"Category": "AFM Measures", "Count": overview_stats.get("afm_measures", 0)},
+                                {"Category": "AFM Attributes", "Count": overview_stats.get("afm_attributes", 0)},
+                                {"Category": "AFM Filters", "Count": overview_stats.get("afm_filters", 0)},
+                                {"Category": "Selected Dashboard Filters", "Count": selected_dashboard_filter_stats.get("effective_filters", 0)},
+                                {"Category": "Selected Dashboard FC Objects", "Count": selected_dashboard_filter_stats.get("filter_context_objects", 0)},
+                                {"Category": "Dependency Nodes", "Count": overview_stats.get("dependency_nodes", 0)},
+                                {"Category": "Dependency Edges", "Count": overview_stats.get("dependency_edges", 0)},
+                                {"Category": "Schedules", "Count": len(schedules)},
+                                {"Category": "Alerts", "Count": len(alerts)},
+                                {"Category": "Dashboard Shares", "Count": overview_stats.get("dashboard_shares", 0)},
+                            ]
+                        ),
+                        width="stretch",
+                        hide_index=True,
+                    )
+                else:
+                    st.info("Please select a workspace from the sidebar or set GOODDATA_DEFAULT_WORKSPACE in your environment.")
+            elif dashboard_view_mode == "Dependent Entities Graph" and active_ws:
+                st.write(f"**Dependent Entities Graph** - {active_ws.name}")
+                components.html(
+                    html_cytoscape(
+                        st.session_state["gd"].build_graph_elements(
+                            current_semantics,
+                            mode="workspace_dependencies",
+                        )
+                    ),
+                    height=650,
+                )
+            elif dashboard_view_mode == "Dashboard Schema" and current_semantics:
+                ws_dash_list = st.session_state.get("ws_dash_list", "")
+                selected_dashboard_id = st.session_state.get("selected_dashboard_id")
+                if ws_dash_list and ws_dash_list != "(no dashboards)" and selected_dashboard_id:
+                    st.write(f"**Dashboard Schema** - {ws_dash_list}")
+                    components.html(
+                        html_cytoscape(
+                            st.session_state["gd"].build_graph_elements(
+                                current_semantics,
+                                mode="dashboard_layout",
+                                dashboard_id=selected_dashboard_id,
+                            )
+                        ),
+                        height=650,
+                    )
+                else:
+                    st.info("Please select a dashboard from the sidebar.")
+            elif dashboard_view_mode == "Dashboard Embed" and active_ws and current_semantics:
+                ws_dash_list = st.session_state.get("ws_dash_list", "")
+                if ws_dash_list and ws_dash_list != "(no dashboards)":
+                    t = time_it()
+                    active_dash = st.session_state["gd"].specific(ws_dash_list, of_type="dashboard", by="name", ws_id=current_ws_id)
+                    st.write(f"**Embedded Dashboard** - {ws_dash_list}")
+                    st.write(f"connecting to GoodData.UI dashboard component on {st.secrets['GOODDATA_HOST']}")
+                    # Render GoodData.UI's React-backed web component directly.
+                    dashboard_html = html_gooddata_ui_dashboard(
+                        host=st.secrets['GOODDATA_HOST'],
+                        workspace_id=active_ws.id,
+                        dashboard_id=active_dash.id,
+                        token=st.secrets['GOODDATA_TOKEN'],
+                        height=700,
+                    )
+                    components.html(dashboard_html, height=700)
+                    st.write(f"dashboard loaded in {time_it(t, True)*1000} milliseconds")
+                else:
+                    st.info("Please select a dashboard from the sidebar.")
+            elif dashboard_view_mode == "Dashboard Shares" and active_ws and current_semantics:
+                ws_dash_list = st.session_state.get("ws_dash_list", "")
+                if ws_dash_list and ws_dash_list != "(no dashboards)":
+                    selected_dashboard_id = st.session_state.get("selected_dashboard_id")
+                    if not selected_dashboard_id:
+                        st.warning("Could not resolve the selected dashboard.")
+                    else:
+                        rows = rows_from_dashboard_shares(current_semantics, selected_dashboard_id)
+                        st.write(f"**Dashboard Shares** - {ws_dash_list}")
+                        st.caption("Users and user groups with permissions on this dashboard.")
+                        if rows:
+                            st.dataframe(pd.DataFrame(rows), width="stretch")
+                            components.html(
+                                html_cytoscape(
+                                    st.session_state["gd"].build_graph_elements(
+                                        current_semantics,
+                                        mode="shares",
+                                        dashboard_id=selected_dashboard_id,
+                                    )
+                                ),
+                                height=650,
+                            )
+                        else:
+                            st.info("No dashboard shares (assignees) for this dashboard.")
+                else:
+                    st.info("Please select a dashboard from the sidebar to view its shares.")
+            elif dashboard_view_mode == "Schedules":
+                st.write("**Schedules & Alerts**")
+                st.caption("Schedules and alerts for the current workspace (based on your token).")
+                if not current_ws_id:
+                    st.info("Select a workspace in the sidebar to see its schedules and alerts.")
+                else:
+                    render_workspace_automation_sections(st.session_state["gd"], current_ws_id)
+
+    # Handle data preparation
+    elif st.session_state.get("upload_csv_btn", False):
+        uploaded_file = st.session_state.get("uploaded_file")
+        if uploaded_file is not None:
+            prep_option = st.session_state.get("prep_option", "CSV as SQL dataset")
+            if prep_option == "CSV as SQL dataset":
+                st.write("Create a new SQL dataset and paste the SQL query (final version should post it directly to the model)")
+                st.write(csv_to_sql(uploaded_file))
+            elif prep_option == "CSV S3 uploader":
+                st.info("[Placeholder] CSV S3 uploader logic will be implemented here.")
+            elif prep_option == "LDM preparation":
+                st.write("LDM Preparation: Generating request based on CSV fields...")
+                st.write(csv_to_ldm_request(uploaded_file))
+
+    # Handle backup
+    elif st.session_state.get("backup_btn", False) and active_ws:
         st.session_state["gd"].export(wks_id=active_ws.id, location=Path.cwd())
         exported_path = Path.cwd().joinpath("gooddata_layouts", org.id, "workspaces", active_ws.id, "analytics_model")
         st.write(f"Workspace: {active_ws.name} backed up to /gooddata_layouts/..., below a list of folders")
         for folder in exported_path.iterdir():
             for file in exported_path.joinpath(folder).glob("*.yaml"):
                 st.write(file)
-    elif clear_cache:
-        ds_active = st.session_state["gd"].get_id(name=ds_list, of_type="datasource")
-        st.session_state["gd"].clear_cache(ds_id=ds_active)
-        st.write(f"data source {ds_active}: cache cleared!")
-    # Inline execution of the Insight Retrieval test
-    if st.session_state.get("_insight_test_request"):
-        req = st.session_state.pop("_insight_test_request")
-        insight_title = req.get("insight_title")
-        datasource_name = req.get("datasource_name")
-        st.info(f"Testing retrieval of insight '{insight_title}' from data source '{datasource_name}'...")
-        t0 = time_it()
-        try:
-            # Resolve and fetch the insight
-            active_ins = st.session_state["gd"].specific(insight_title, of_type="insight", by="name", ws_id=active_ws.id)
-            elapsed = time_it(t0, True)
-            st.success(f"Insight retrieved in {elapsed:.2f} seconds.")
-            # Append timing entry to a session time series for charting
-            st.session_state.setdefault("timing", [])
-            st.session_state["timing"].append({
-                "insight": insight_title,
-                "datasource": datasource_name,
-                "timestamp": Timestamp.now(),
-                "elapsed": elapsed,
-            })
-            # Time series chart of retrieval times
-            if st.session_state["timing"]:
-                timing_df = DataFrame(st.session_state["timing"]).copy()
-                timing_df["timestamp"] = to_datetime(timing_df["timestamp"])
-                timing_df = timing_df.sort_values(["insight", "timestamp"])
-                st.caption("Time series of retrieval times for all insights.")
-                chart = alt.Chart(timing_df).mark_line(point=True).encode(
-                    x=alt.X('timestamp:T', title='Timestamp'),
-                    y=alt.Y('elapsed:Q', title='Retrieval time (s)'),
-                    color=alt.Color('insight:N', title='Insight'),
-                    tooltip=['insight', 'datasource', 'timestamp', 'elapsed']
-                ).properties(width='container', height=350)
-                st.altair_chart(chart, width='stretch')
-                st.dataframe(
-                    timing_df[["insight","datasource","timestamp","elapsed"]]
-                    .rename(columns={"elapsed":"Retrieval time (s)", "insight": "Insight", "datasource": "Data source", "timestamp": "Timestamp"})
-                )
-            # Show the dataframe with the insight's content
-            st.caption("Insight object data frame (actual data):")
-            st.dataframe(active_ins, width='stretch')
-        except Exception as e:
-            st.error(f"Error retrieving insight: {e}")
+    elif st.session_state.get("deploy_users_internal_clicked", False):
+        # Reset the flag
+        st.session_state["deploy_users_internal_clicked"] = False
 
-    elif upload_csv and uploaded_file is not None:
-        if prep_option == "CSV as SQL dataset":
-            st.write("Create a new SQL dataset and paste the SQL query (final version should post it directly to the model)")
-            with st.form("sql_form"):
-                sql_query = st.text_area("SQL Query", height=200)
-                submitted = st.form_submit_button("Run SQL")
-        elif prep_option == "CSV S3 uploader":
-            st.info("[Placeholder] CSV S3 uploader logic will be implemented here.")
-        elif prep_option == "LDM preparation":
-            st.write("LDM Preparation: Generating request based on CSV fields...")
-            st.write(csv_to_ldm_request(uploaded_file))
-    else:
-        st.write(f"Selected workspace: {active_ws.name}")
+        selected_user_workspaces = st.session_state.get("selected_user_workspaces", {})
 
-        # Read from unified cache
-        ws_id_active = st.session_state.get("current_ws_id")
-        ws_cache = st.session_state.get("ws_cache", {})
-        cache_entry = ws_cache.get(ws_id_active, {})
-        analytics = cache_entry.get("analytics")
+        if not selected_user_workspaces:
+            st.warning("⚠️ No users selected or no workspaces assigned")
+        else:
+            st.markdown("---")
+            st.subheader(f"👥 User Assignment Report ({len(selected_user_workspaces)} user(s))")
 
-        # Prefer prebuilt DataFrames from cache; compute only if missing
-        metrics_df = cache_entry.get("metrics_df")
-        visuals_df = cache_entry.get("visuals_df")
-        dashes_df = cache_entry.get("dashes_df")
-        if metrics_df is None or visuals_df is None or dashes_df is None:
-            mx_list, vz_list, db_list = get_analytics_lists(analytics)
-            metrics_df = DataFrame(build_metric_rows(mx_list)) if mx_list else DataFrame()
-            visuals_df = DataFrame(build_visual_rows(vz_list)) if vz_list else DataFrame()
-            pre_filter_ctx_rows, fc_map = build_filter_context_rows_from_analytics(analytics)
-            dashes_df = DataFrame(build_dashboard_rows(db_list, active_ws.id, fc_map)) if db_list else DataFrame()
-            # Store back into cache for reuse
-            if cache_entry is not None:
-                cache_entry["metrics_df"] = metrics_df
-                cache_entry["visuals_df"] = visuals_df
-                cache_entry["dashes_df"] = dashes_df
-                # also (re)build filter contexts
-                cache_entry["filter_ctx_df"] = DataFrame(pre_filter_ctx_rows)
+            success_count = 0
+            error_count = 0
+            errors = []
 
-        tab_overview, tab_metrics, tab_visuals, tab_dash, tab_filters, tab_ldm, tab_graph = st.tabs([
-            "Overview", "Metrics", "Visualizations", "Dashboards", "Filter Contexts", "LDM", "Graph"
-        ])
-
-        with tab_overview:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Metrics", len(metrics_df))
-            c2.metric("Visualizations", len(visuals_df))
-            c3.metric("Dashboards", len(dashes_df))
-            c4, c5 = st.columns(2)
-            ldm_tables = cache_entry.get("ldm_counts", {}).get("tables", 0)
-            ldm_cols = cache_entry.get("ldm_counts", {}).get("columns", 0)
-            c4.metric("Tables (LDM)", ldm_tables)
-            c5.metric("Columns (LDM)", ldm_cols)
-            if analytics is None:
-                st.info("Workspace analytics not loaded yet. Use 'Reload workspace details' in the sidebar.")
-            st.caption("Basic overview of objects in the selected workspace. LDM counts are cached on workspace selection.")
-
-        with tab_metrics:
-            st.subheader("Metrics")
-            col1, col2, col3 = st.columns([1, 1, 1])
-            q_title = col1.text_input("Title contains", key="mx_title_q")
-            q_tags = col2.text_input("Tags contains", key="mx_tags_q")
-            show_full = col3.checkbox("Show full structure", value=False, key="mx_full")
-            df = metrics_df.copy()
-            # Ensure enriched columns are present even if cache predates the change
-            required_cols = {"description", "maql", "format", "created_at", "modified_at"}
-            if not df.empty and not required_cols.issubset(set(df.columns)):
+            for user_id, workspace_name in selected_user_workspaces.items():
                 try:
-                    mx_list, _, _ = get_analytics_lists(analytics)
-                    df = DataFrame(build_metric_rows(mx_list)) if mx_list else DataFrame()
-                    # update cache so subsequent renders use enriched columns
-                    cache_entry = st.session_state.get("ws_cache", {}).get(st.session_state.get("current_ws_id"), None)
-                    if isinstance(cache_entry, dict):
-                        cache_entry["metrics_df"] = df
-                except Exception:
-                    pass
-            # Optional full structure view
-            if show_full and analytics is not None:
-                try:
-                    mx_list, _, _ = get_analytics_lists(analytics)
-                    df = DataFrame(build_flat_rows(mx_list)) if mx_list else DataFrame()
-                except Exception:
-                    pass
-            if not df.empty:
-                if q_title and "title" in df.columns:
-                    df = df[df["title"].astype(str).str.contains(q_title, case=False, na=False)]
-                if q_tags and "tags" in df.columns:
-                    df = df[df["tags"].astype(str).str.contains(q_tags, case=False, na=False)]
-                st.dataframe(df, width='stretch')
-            else:
-                st.info("No metrics found in this workspace.")
+                    # Get workspace ID from name
+                    workspace_id = st.session_state["gd"].get_id(workspace_name, of_type="workspace")
+                    if not workspace_id:
+                        raise Exception(f"Workspace '{workspace_name}' not found")
 
-        with tab_visuals:
-            st.subheader("Visualizations")
-            col1, col2, col3 = st.columns([1, 1, 1])
-            q_title = col1.text_input("Title contains", key="viz_title_q")
-            q_tags = col2.text_input("Tags contains", key="viz_tags_q")
-            show_full = col3.checkbox("Show full structure", value=False, key="vz_full")
-            df = visuals_df.copy()
-            # Ensure enriched columns are present even if cache predates the change
-            required_cols_vz = {"description", "type", "created_at", "modified_at", "bucket_count"}
-            if not df.empty and not required_cols_vz.issubset(set(df.columns)):
-                try:
-                    _, vz_list, _ = get_analytics_lists(analytics)
-                    df = DataFrame(build_visual_rows(vz_list)) if vz_list else DataFrame()
-                    # update cache so subsequent renders use enriched columns
-                    cache_entry = st.session_state.get("ws_cache", {}).get(st.session_state.get("current_ws_id"), None)
-                    if isinstance(cache_entry, dict):
-                        cache_entry["visuals_df"] = df
-                except Exception:
-                    pass
-            if show_full and analytics is not None:
-                try:
-                    _, vz_list, _ = get_analytics_lists(analytics)
-                    df = DataFrame(build_flat_rows(vz_list)) if vz_list else DataFrame()
-                except Exception:
-                    pass
-            if not df.empty:
-                if q_title and "title" in df.columns:
-                    df = df[df["title"].astype(str).str.contains(q_title, case=False, na=False)]
-                if q_tags and "tags" in df.columns:
-                    df = df[df["tags"].astype(str).str.contains(q_tags, case=False, na=False)]
-                st.dataframe(df, width='stretch')
-            else:
-                st.info("No visualizations found in this workspace.")
+                    st.session_state["gd"].assign_user_to_workspace(user_id, workspace_id, ["VIEW"])
+                    st.success(f"✅ Assigned user '{user_id}' to workspace '{workspace_name}'")
+                    success_count += 1
+                except Exception as e:
+                    error_msg = f"Failed to assign user '{user_id}' to workspace '{workspace_name}': {str(e)}"
+                    st.error(f"❌ {error_msg}")
+                    errors.append(error_msg)
+                    error_count += 1
 
-        with tab_dash:
-            st.subheader("Dashboards")
+            st.divider()
             col1, col2 = st.columns(2)
-            q_title = col1.text_input("Title contains", key="dash_title_q")
-            q_tags = col2.text_input("Tags contains", key="dash_tags_q")
-            df = dashes_df.copy()
-            if not df.empty:
-                if q_title:
-                    df = df[df["title"].astype(str).str.contains(q_title, case=False, na=False)]
-                if q_tags and "tags" in df.columns:
-                    df = df[df["tags"].astype(str).str.contains(q_tags, case=False, na=False)]
-                df = df.fillna("")
+            with col1:
+                st.metric("✅ Successful", success_count)
+            with col2:
+                st.metric("❌ Failed", error_count)
 
-                # Render header
-                hdr = st.container()
-                with hdr:
-                    hcols = st.columns([0.5, 0.5, 0.6, 2, 2, 1.2, 0.8, 0.8, 1.2, 1.2, 1.8])
-                    hcols[0].markdown("**📎**")
-                    hcols[1].markdown("**🌳**")
-                    hcols[2].markdown("**🔗**")
-                    hcols[3].markdown("**ID**")
-                    hcols[4].markdown("**Title**")
-                    hcols[5].markdown("**Filter Ctx**")
-                    hcols[6].markdown("**Hidden**")
-                    hcols[7].markdown("**Valid**")
-                    hcols[8].markdown("**Created**")
-                    hcols[9].markdown("**Modified**")
-                    hcols[10].markdown("**Tags**")
+            if errors:
+                with st.expander("❌ Error Details", expanded=False):
+                    for error in errors:
+                        st.text(error)
 
-                # Track clicked action
-                clicked_action = None
-                clicked_dash_id = None
-                clicked_dash_title = None
+    elif st.session_state.get("deploy_users_testing_clicked", False):
+        # Reset the flag
+        st.session_state["deploy_users_testing_clicked"] = False
 
-                # Rows
-                fc_lookup = {}
-                try:
-                    fctx_df_cached = cache_entry.get("filter_ctx_df")
-                    if isinstance(fctx_df_cached, DataFrame) and not fctx_df_cached.empty:
-                        for _, rr in fctx_df_cached.fillna("").iterrows():
-                            fc_lookup[str(rr.get("id"))] = rr.to_dict()
-                except Exception:
-                    fc_lookup = {}
+        workspace_id = st.session_state.get("deploy_users_testing_workspace_id", "")
+        users_data = st.session_state.get("users_testing", load_users_testing())
+        users_list = users_data.get("users", [])
+        user_groups_list = users_data.get("userGroups", [])
 
-                for _, r in df.iterrows():
-                    rid = str(r.get("id", ""))
-                    rtitle = str(r.get("title", ""))
-                    rfcid = str(r.get("filter_context_id", ""))
-                    rhidden = str(r.get("is_hidden", ""))
-                    rvalid = str(r.get("is_valid", ""))
-                    rcreated = str(r.get("created_at", ""))
-                    rmodified = str(r.get("modified_at", ""))
-                    rtags = str(r.get("tags", ""))
-                    rapp = str(r.get("app_url", ""))
-                    fc_display = rfcid or "-"
-                    if rfcid and fc_lookup:
-                        info = fc_lookup.get(rfcid)
-                        if isinstance(info, dict):
-                            parts = []
-                            t = info.get("title")
-                            if t:
-                                parts.append(str(t))
-                            fc_total = info.get("filter_count")
-                            # fallback: try to compute from this row's own definition if missing in cache
-                            if (fc_total is None or str(fc_total) == "") and isinstance(r.get("filter_context_definition"), dict):
-                                try:
-                                    rdef = r.get("filter_context_definition")
-                                    if isinstance(rdef.get("filters"), list):
-                                        fc_total = len(rdef.get("filters"))
-                                    elif isinstance(rdef.get("filterContext"), dict) and isinstance(rdef.get("filterContext").get("filters"), list):
-                                        fc_total = len(rdef.get("filterContext").get("filters"))
-                                except Exception:
-                                    pass
-                            if fc_total is not None:
-                                parts.append(f"{fc_total} filters")
-                            a_cnt = info.get("attribute_filter_count")
-                            d_cnt = info.get("date_filter_count")
-                            if (a_cnt is not None and str(a_cnt) != "") or (d_cnt is not None and str(d_cnt) != ""):
-                                parts.append(f"a:{a_cnt or 0}/d:{d_cnt or 0}")
-                            if parts:
-                                fc_display = f"{rfcid} • " + " • ".join(parts)
-                    cols = st.columns([0.5, 0.5, 0.6, 2, 2, 1.2, 0.8, 0.8, 1.2, 1.2, 1.8])
-                    if cols[0].button("📎", key=f"embed_{rid}"):
-                        clicked_action, clicked_dash_id, clicked_dash_title = "embed", rid, rtitle
-                    if cols[1].button("🌳", key=f"schema_{rid}"):
-                        clicked_action, clicked_dash_id, clicked_dash_title = "schema", rid, rtitle
-                    if rapp:
-                        cols[2].link_button("🔗", rapp)
+        if not workspace_id:
+            st.warning("⚠️ No workspace selected")
+        elif not users_list:
+            st.warning("⚠️ No users configured")
+        else:
+            st.markdown("---")
+            st.subheader(f"🧪 Testing Users Deployment Report")
+
+            deployment_result = st.session_state["gd"].deploy_testing_users(workspace_id, users_data)
+
+            if user_groups_list:
+                st.write("**Creating User Groups:**")
+                for group_result in deployment_result.get("groups", []):
+                    if group_result.get("success"):
+                        st.success(f"✅ {group_result.get('message')}")
                     else:
-                        cols[2].markdown("-")
-                    cols[3].markdown(rid)
-                    cols[4].markdown(rtitle or "-")
-                    cols[5].markdown(fc_display)
-                    cols[6].markdown(rhidden or "-")
-                    cols[7].markdown(rvalid or "-")
-                    cols[8].markdown(rcreated or "-")
-                    cols[9].markdown(rmodified or "-")
-                    cols[10].markdown(rtags or "-")
+                        st.error(f"❌ {group_result.get('message')}")
 
-                # Inline render under the table
-                if clicked_action == "embed" and clicked_dash_id:
-                    t = time_it()
-                    try:
-                        row_match = dashes_df[dashes_df["id"].astype(str) == str(clicked_dash_id)]
-                        embed_url = None
-                        embed_url_alt = None
-                        if not row_match.empty and "embed_url" in row_match.columns:
-                            embed_url = row_match.iloc[0]["embed_url"]
-                            embed_url_alt = row_match.iloc[0].get("embed_url_alt")
-                        if not embed_url:
-                            # Use organization hostname (preferred) or fallback to gd instance host
-                            host = org_hostname
-                            embed_url = f"{host}/dashboards/embedded/#/workspace/{active_ws.id}/dashboard/{clicked_dash_id}?showNavigation=false&setHeight=700"
-                            embed_url_alt = f"{host}/embedded/dashboards/#/workspace/{active_ws.id}/dashboard/{clicked_dash_id}?showNavigation=false&setHeight=700"
-                        # Probe URLs to auto-select a working variant (via helpers.py)
-                        if probe_url(embed_url):
-                            url_to_use = embed_url
-                            use_token_embed = True
-                        elif probe_url(embed_url_alt):
-                            url_to_use = embed_url_alt
-                            use_token_embed = False
-                        else:
-                            # If both probes fail, still try default to allow cookie-auth flows
-                            url_to_use = embed_url or embed_url_alt
-                            use_token_embed = bool(embed_url)
-                        st.caption(f"Embedding: {url_to_use}")
-                        if use_token_embed:
-                            # Preferred path: push the API token into the iframe via postMessage
-                            # instead of relying on an existing cookie session.
-                            gd_token = getattr(st.session_state["gd"], "_token", "")
-                            components.html(
-                                html_embedded_dashboard(f"{org_hostname}/", active_ws.id, clicked_dash_id, gd_token, height=700),
-                                height=700,
-                            )
-                        else:
-                            components.iframe(url_to_use, 1000, 700)
-                        st.write(f"dashboard loaded in {time_it(t, True)*1000} milliseconds")
-                    except Exception as _e:
-                        st.error(f"Failed to embed dashboard: {_e}")
-                elif clicked_action == "schema" and (clicked_dash_title or clicked_dash_id):
-                    # Try to render schema by title first; fall back to id
-                    try:
-                        ident_used = None
-                        dashboard_visual = None
-                        if clicked_dash_title:
-                            ident_used = f"title: {clicked_dash_title}"
-                            try:
-                                dashboard_visual = st.session_state["gd"].schema(clicked_dash_title, ws_id=active_ws.id)
-                            except Exception:
-                                dashboard_visual = None
-                        if dashboard_visual is None and clicked_dash_id:
-                            ident_used = f"id: {clicked_dash_id}"
-                            try:
-                                dashboard_visual = st.session_state["gd"].schema(clicked_dash_id, ws_id=active_ws.id)
-                            except Exception as _e2:
-                                st.error(f"Failed to resolve schema by id: {_e2}")
-                        if dashboard_visual is not None:
-                            st.caption(f"Schema for ({ident_used})")
-                            st.graphviz_chart(dashboard_visual)
-                        else:
-                            st.warning("Could not render dashboard schema. Tried by title and id.")
-                    except Exception as _e:
-                        st.error(f"Error rendering dashboard schema: {_e}")
-            else:
-                st.info("No dashboards found in this workspace.")
-
-        with tab_filters:
-            st.subheader("Filter Contexts")
-            # Prefer dedicated filter contexts dataframe from cache; fallback to dashboard-derived aggregation
-            fctx_df_cached = cache_entry.get("filter_ctx_df", DataFrame())
-            # If cached df missing expected columns, rebuild and update cache
-            required_cols_fc = {"title", "created_at", "modified_at", "filter_count"}
-            if (fctx_df_cached is None) or fctx_df_cached.empty or not required_cols_fc.issubset(set(fctx_df_cached.columns)):
-                try:
-                    pre_filter_ctx_rows, _ = build_filter_context_rows_from_analytics(analytics)
-                    fctx_df_cached = DataFrame(pre_filter_ctx_rows)
-                    # update cache so subsequent renders use enriched columns
-                    cache_entry = st.session_state.get("ws_cache", {}).get(st.session_state.get("current_ws_id"), None)
-                    if isinstance(cache_entry, dict):
-                        cache_entry["filter_ctx_df"] = fctx_df_cached
-                except Exception:
-                    pass
-            if fctx_df_cached is not None and not fctx_df_cached.empty:
-                df = fctx_df_cached.copy()
-                # Expand definition to columns (prefix def.) if present
-                if "definition" in df.columns:
-                    try:
-                        expl = DataFrame([_flatten_dict(x if isinstance(x, dict) else {}) for x in df["definition"].tolist()])
-                        expl = expl.add_prefix("def.")
-                        df = df.drop(columns=["definition"]).join(expl)
-                    except Exception:
-                        pass
-                st.dataframe(df, width='stretch')
-            else:
-                # Build from dashboards dataframe if available; aggregate unique FCs
-                df_dash = dashes_df.copy()
-                if not df_dash.empty and "filter_context_id" in df_dash.columns:
-                    # Keep only rows with FC ids
-                    fcs = df_dash[df_dash["filter_context_id"].astype(str).str.len() > 0][["filter_context_id", "filter_context_definition", "title", "id"]].copy() if "filter_context_definition" in df_dash.columns else df_dash[["filter_context_id", "title", "id"]].copy()
-                    # Group by id; if definition dict present, take first
-                    try:
-                        fcs = fcs.dropna(subset=["filter_context_id"]).groupby("filter_context_id").first().reset_index()
-                    except Exception:
-                        pass
-                    # If definition is dict, expand a few common keys
-                    if "filter_context_definition" in fcs.columns:
-                        try:
-                            # Normalize dict column into prefixed columns
-                            expl = DataFrame([_flatten_dict(x if isinstance(x, dict) else {}) for x in fcs["filter_context_definition"].tolist()])
-                            expl = expl.add_prefix("def.")
-                            fcs = fcs.drop(columns=["filter_context_definition"]).join(expl)
-                        except Exception:
-                            pass
-                    st.dataframe(fcs, width='stretch')
+            st.divider()
+            st.write("**Creating/Updating Users:**")
+            for user_result in deployment_result.get("users", []):
+                if user_result.get("success"):
+                    st.success(f"✅ {user_result.get('message')}")
                 else:
-                    st.info("No filter contexts discovered from dashboards.")
+                    st.error(f"❌ {user_result.get('message')}")
 
-        with tab_ldm:
-            st.subheader("Logical Data Model")
-            # Always use cached bundle; include best-effort data source enrichment if present
-            ds_df = cache_entry.get("ldm_ds_df", DataFrame())
-            cols_df = cache_entry.get("ldm_cols_df", DataFrame())
-            refs_df = cache_entry.get("ldm_refs_df", DataFrame())
-            fetched_via = "cache"
-            # Multiselect datasets to filter columns
-            if not ds_df.empty:
-                ds_labels = (ds_df["dataset_title"].fillna(ds_df["dataset_id"]) if "dataset_title" in ds_df.columns else ds_df["dataset_id"]).tolist()
-                default_selection = ds_labels
-                selected_datasets = st.multiselect("Select datasets", options=ds_labels, default=default_selection)
-                # map labels back to ids
-                map_title_to_id = {row["dataset_title"] if row.get("dataset_title") else row.get("dataset_id"): row.get("dataset_id") for _, row in ds_df.fillna("").iterrows()}
-                selected_ids = [map_title_to_id.get(lbl, lbl) for lbl in selected_datasets]
-                if not cols_df.empty and selected_ids:
-                    cols_df = cols_df[cols_df["dataset_id"].isin(selected_ids)]
-            # Show datasource columns if available
-            if "data_source_id" in ds_df.columns or "data_source_name" in ds_df.columns:
-                st.caption("Datasets include best-effort data source mapping (via PDM table heuristics).")
-            st.caption(f"Columns (via {fetched_via})")
-            st.dataframe(cols_df, width='stretch')
-            if refs_df is not None and not refs_df.empty:
-                st.caption("References (dataset foreign keys)")
-                st.dataframe(refs_df, width='stretch')
+            st.divider()
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("✅ Successful", deployment_result.get("success_count", 0))
+            with col2:
+                st.metric("❌ Failed", deployment_result.get("error_count", 0))
 
-        with tab_graph:
-            st.subheader("Dependent Entities Graph")
-            try:
-                components.html(html_cytoscape(st.session_state["gd"].ws_schema(active_ws.id)), height=650)
-            except Exception as e:
-                st.error(f"Failed to render graph: {e}")
+    else:
+        # Default view: show workspace info (no auto-generated graph)
+        if active_ws:
+            st.write(f"**Selected workspace: {active_ws.name}**")
+            st.info("Select a dashboard view mode from the sidebar to display content.")
+        else:
+            st.info("Please select a workspace from the sidebar or set GOODDATA_DEFAULT_WORKSPACE in your environment.")
+
+
+
 
 
 if __name__ == "__main__":
